@@ -1,5 +1,5 @@
 use std::error::Error;
-use fuzzy_logic::do_something;
+use fuzzy_logic::set;
 
 #[macro_use] extern crate rocket;
 
@@ -19,7 +19,7 @@ async fn fetch_binance() -> Result<String, Box<dyn Error>> {
 
 #[get("/")]
 fn index() -> String {
-    do_something().to_string()
+    "Hello World".to_string()
 }
 
 #[get("/binance")]
