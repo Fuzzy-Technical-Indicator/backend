@@ -6,7 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+fuzzy_logic = { path = "fuzzy_logic" }
+
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.11", features = ["json"] }
 rocket = "0.5.0-rc.2"
-fuzzy_logic = { path = "fuzzy_logic" }
+binance = { git = "https://github.com/wisespace-io/binance-rs.git" }
+mongodb = "2.3.0"
+dotenvy = "0.15.6"
+
+[dependencies.rocket_db_pools]
+version = "0.1.0-rc.2"
+features = ["mongodb"]

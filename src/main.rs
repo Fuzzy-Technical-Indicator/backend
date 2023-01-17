@@ -1,7 +1,12 @@
 use std::error::Error;
-use fuzzy_logic::set;
 
-#[macro_use] extern crate rocket;
+use rocket_db_pools::{mongodb, Database};
+#[derive(Database)]
+#[database("marketdata")]
+struct MarketData(mongodb::Client);
+
+#[macro_use]
+extern crate rocket;
 
 async fn fetch_binance() -> Result<String, Box<dyn Error>> {
     let base = "https://api.binance.com";
@@ -30,6 +35,7 @@ async fn binance() -> String {
 #[launch]
 fn rocket() -> _ {
     rocket::build()
+        .attach(MarketData::init())
         .mount("/", routes![index])
         .mount("/", routes![binance])
 }
