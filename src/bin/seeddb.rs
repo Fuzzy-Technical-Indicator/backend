@@ -2,15 +2,15 @@ use chrono::TimeZone;
 use dotenvy::dotenv;
 use mongodb::bson::{self, doc};
 use mongodb::options::IndexOptions;
-use mongodb::IndexModel;
 use mongodb::{options::ClientOptions, Client};
+use mongodb::{Database, IndexModel};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::thread;
 use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct OHLC {
+pub struct IntradayExtended {
     ticker: String,
     time: bson::DateTime,
     open: f64,
@@ -20,23 +20,19 @@ pub struct OHLC {
     volume: u64,
 }
 
-fn parse_data(resp: String, ticker: String) -> Result<Vec<OHLC>, Box<dyn Error>> {
-    let mut res: Vec<OHLC> = vec![];
+fn parse_intraday_extended(
+    resp: String,
+    symbol: String,
+) -> Result<Vec<IntradayExtended>, Box<dyn Error>> {
+    let mut rdr = csv::Reader::from_reader(resp.as_bytes());
+    let mut res: Vec<IntradayExtended> = vec![];
 
-    let mut line_iter = resp.lines();
+    for result in rdr.records() {
+        let data = result?;
 
-    while let Some(l) = line_iter.next() {
-        // this is kind of ugly maybe use `csv` crate instead
-        if l.trim() == "" || l.contains("time") {
-            continue;
-        }
-
-        let data: Vec<&str> = l.split(',').collect();
-
-        let datetime = chrono::Utc.datetime_from_str(data[0], "%Y-%m-%d %H:%M:%S")?;
-
-        res.push(OHLC {
-            ticker: ticker.clone(),
+        let datetime = chrono::Utc.datetime_from_str(&data[0], "%Y-%m-%d %H:%M:%S")?;
+        res.push(IntradayExtended {
+            ticker: symbol.clone(),
             time: datetime.into(),
             open: data[1].parse()?,
             high: data[2].parse()?,
@@ -45,38 +41,95 @@ fn parse_data(resp: String, ticker: String) -> Result<Vec<OHLC>, Box<dyn Error>>
             volume: data[5].parse()?,
         });
     }
-
     Ok(res)
 }
 
-pub async fn fetch_alphavantage() -> Result<Vec<OHLC>, Box<dyn Error>> {
-    dotenv().ok();
-    let apikey = dotenvy::var("ALPHA_VANTAGE_APIKEY")?;
+pub struct AlphaVantageClient {
+    apikey: String,
+    base_url: String,
+}
 
-    let base = "https://www.alphavantage.co/query";
-    let call_type = "TIME_SERIES_INTRADAY_EXTENDED";
-    let symbol = "AAPl";
-    let interval = "60min";
-
-    let mut result: Vec<OHLC> = vec![];
-
-    // fetch all slices of the stock data
-    for y in 1..=2 {
-        for m in 1..=12 {
-            let slice = format!("year{}month{}", y, m);
-            let params = format!("?function={call_type}&symbol={symbol}&interval={interval}&slice={slice}&apikey={apikey}");
-            println!("Fetching {slice}...");
-
-            let resp = reqwest::get(format!("{base}{params}"))
-                .await?
-                .text()
-                .await?;
-
-            result.append(&mut parse_data(resp, format!("{symbol}/USD"))?);
-            thread::sleep(Duration::from_secs(12));
+impl AlphaVantageClient {
+    pub fn new<S>(apikey: S) -> AlphaVantageClient
+    where
+        S: Into<String>,
+    {
+        AlphaVantageClient {
+            apikey: apikey.into(),
+            base_url: "https://www.alphavantage.co/query".to_string(),
         }
     }
-    Ok(result)
+
+    /// This could be 5 - 10 mins fetching
+    /// - `symbol` The name of the equity of your choice. For example: symbol=IBM
+    /// - `interval` Time interval between two consecutive data points in the time series.
+    /// The following values are supported: 1min, 5min, 15min, 30min, 60min
+    pub async fn intraday_extended<S>(
+        &self,
+        symbol: S,
+        interval: S,
+    ) -> Result<Vec<IntradayExtended>, Box<dyn Error>>
+    where
+        S: Into<String>,
+    {
+        let call_type = "TIME_SERIES_INTRADAY_EXTENDED";
+        let symbol: String = symbol.into();
+        let interval: String = interval.into();
+
+        let base_params = format!(
+            "?function={call_type}&symbol={symbol}&interval={interval}&apikey={}",
+            self.apikey
+        );
+
+        let mut result: Vec<IntradayExtended> = vec![];
+        // fetch all slices start at year1month1 to year2month12
+        for y in 1..=2 {
+            for m in 1..=12 {
+                let slice = format!("year{}month{}", y, m);
+                let params = format!("{base_params}&slice={slice}");
+                println!("Fetching {slice}");
+
+                let resp = reqwest::get(format!("{}{params}", self.base_url))
+                    .await?
+                    .text()
+                    .await?;
+
+                result.append(&mut parse_intraday_extended(resp, format!("{symbol}/USD"))?);
+                thread::sleep(Duration::from_secs(12));
+            }
+        }
+        Ok(result)
+    }
+}
+
+/// - `ticker` examples: AAPL/USD, TSLA/USD
+pub async fn seed_market<S>(ticker: S, db: &Database) -> Result<(), Box<dyn Error>>
+where
+    S: Into<String>,
+{
+    let ticker: String = ticker.into();
+    let collection = db.collection::<IntradayExtended>(&*ticker);
+
+    let index_options = IndexOptions::builder().unique(Some(true)).build();
+    let index = IndexModel::builder()
+        .keys(doc! {"time" : 1})
+        .options(Some(index_options))
+        .build();
+    collection.create_index(index, None).await?;
+
+    let apikey = dotenvy::var("ALPHA_VANTAGE_APIKEY")?;
+    let market = AlphaVantageClient::new(apikey);
+
+    collection
+        .insert_many(
+            &market
+                .intraday_extended(ticker.split('/').next().unwrap(), "60min")
+                .await?,
+            None,
+        )
+        .await?;
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -89,18 +142,8 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     let client = Client::with_options(client_options)?;
 
     let db = client.database("StockMarket");
-    let collection = db.collection::<OHLC>("AAPL/USD");
 
-    let index_options = IndexOptions::builder().unique(Some(true)).build();
-    let index = IndexModel::builder()
-        .keys(doc! {"time" : 1})
-        .options(Some(index_options))
-        .build();
-    collection.create_index(index, None).await?;
-
-    collection
-        .insert_many(&fetch_alphavantage().await?, None)
-        .await?;
+    seed_market("TSLA/USD", &db).await?;
 
     Ok(())
 }
@@ -115,7 +158,7 @@ mod tests {
             .datetime_from_str("2022-12-19 05:00:00", "%Y-%m-%d %H:%M:%S")
             .unwrap();
 
-        let expected1 = OHLC {
+        let expected1 = IntradayExtended {
             ticker: "AAPL/USD".into(),
             time: datetime.into(),
             open: 135.82828321847023,
@@ -129,7 +172,7 @@ mod tests {
             .datetime_from_str("2023-01-13 20:00:00", "%Y-%m-%d %H:%M:%S")
             .unwrap();
 
-        let expected2 = OHLC {
+        let expected2 = IntradayExtended {
             ticker: "AAPL/USD".into(),
             time: datetime.into(),
             open: 134.53,
@@ -139,9 +182,10 @@ mod tests {
             volume: 36689,
         };
 
-        let result = parse_data(
-            "2022-12-19 05:00:00,135.82828321847023,135.82828321847023,135.0292933171851,135.1191796810797,58474
-            \n2023-01-13 20:00:00,134.53,134.6,134.5,134.55,36689".into(),
+        let result = parse_intraday_extended(
+            "time,open,high,low,close,volume
+            2022-12-19 05:00:00,135.82828321847023,135.82828321847023,135.0292933171851,135.1191796810797,58474
+            2023-01-13 20:00:00,134.53,134.6,134.5,134.55,36689".into(),
             "AAPL/USD".into(),
         )
         .unwrap();
