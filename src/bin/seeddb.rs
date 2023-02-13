@@ -1,7 +1,7 @@
 use chrono::TimeZone;
 use dotenvy::dotenv;
 use mongodb::bson::{self, doc};
-use mongodb::options::IndexOptions;
+use mongodb::options::{FindOneOptions, IndexOptions};
 use mongodb::{options::ClientOptions, Client};
 use mongodb::{Database, IndexModel};
 use serde::{Deserialize, Serialize};
@@ -108,7 +108,7 @@ where
     S: Into<String>,
 {
     let ticker: String = ticker.into();
-    let collection = db.collection::<IntradayExtended>(&*ticker);
+    let collection = db.collection::<IntradayExtended>(&ticker);
 
     let index_options = IndexOptions::builder().unique(Some(true)).build();
     let index = IndexModel::builder()
@@ -120,14 +120,30 @@ where
     let apikey = dotenvy::var("ALPHA_VANTAGE_APIKEY")?;
     let market = AlphaVantageClient::new(apikey);
 
-    collection
-        .insert_many(
-            &market
-                .intraday_extended(ticker.split('/').next().unwrap(), "60min")
-                .await?,
-            None,
-        )
+    let market_data = market
+        .intraday_extended(ticker.split('/').next().unwrap(), "60min")
         .await?;
+
+    let find_options = FindOneOptions::builder().sort(doc! {"time": -1}).build();
+    let result = collection.find_one(None, Some(find_options)).await?;
+
+    match result {
+        Some(res) => {
+            let filtered_data: Vec<_> = market_data
+                .iter()
+                .filter(|x| x.time.gt(&res.time))
+                .collect();
+
+            if filtered_data.len() == 0 {
+                return Ok(());
+            }
+
+            collection.insert_many(filtered_data, None).await?;
+        }
+        None => {
+            collection.insert_many(market_data, None).await?;
+        }
+    }
 
     Ok(())
 }
@@ -143,7 +159,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
     let db = client.database("StockMarket");
 
-    seed_market("TSLA/USD", &db).await?;
+    seed_market("NKE/USD", &db).await?;
 
     Ok(())
 }
