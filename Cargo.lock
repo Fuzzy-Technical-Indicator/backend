@@ -49,6 +49,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "alphavantage"
+version = "0.1.0"
+dependencies = [
+ "bson",
+ "chrono",
+ "csv",
+ "reqwest",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -119,16 +131,15 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 name = "backend"
 version = "0.1.0"
 dependencies = [
+ "alphavantage",
  "binance",
  "chrono",
- "csv",
  "dotenvy",
  "fuzzy_logic",
  "mongodb",
  "reqwest",
  "rocket",
  "rocket_db_pools",
- "serde",
  "tokio",
 ]
 
