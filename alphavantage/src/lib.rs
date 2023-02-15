@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct IntradayExtended {
+pub struct Ohlc {
     pub ticker: String,
     pub time: bson::DateTime,
     pub open: f64,
@@ -15,18 +15,15 @@ pub struct IntradayExtended {
     pub volume: u64,
 }
 
-fn parse_intraday_extended(
-    resp: String,
-    symbol: String,
-) -> Result<Vec<IntradayExtended>, Box<dyn Error>> {
+fn parsecsv_to_ohlc(resp: String, symbol: String) -> Result<Vec<Ohlc>, Box<dyn Error>> {
     let mut rdr = csv::Reader::from_reader(resp.as_bytes());
-    let mut res: Vec<IntradayExtended> = vec![];
+    let mut res: Vec<Ohlc> = vec![];
 
     for result in rdr.records() {
         let data = result?;
 
         let datetime = Utc.datetime_from_str(&data[0], "%Y-%m-%d %H:%M:%S")?;
-        res.push(IntradayExtended {
+        res.push(Ohlc {
             ticker: symbol.clone(),
             time: datetime.into(),
             open: data[1].parse()?,
@@ -63,7 +60,7 @@ impl AlphaVantageClient {
         &self,
         symbol: S,
         interval: S,
-    ) -> Result<Vec<IntradayExtended>, Box<dyn Error>>
+    ) -> Result<Vec<Ohlc>, Box<dyn Error>>
     where
         S: Into<String>,
     {
@@ -76,7 +73,7 @@ impl AlphaVantageClient {
             self.apikey
         );
 
-        let mut result: Vec<IntradayExtended> = vec![];
+        let mut result: Vec<Ohlc> = vec![];
         // fetch all slices start at year1month1 to year2month12
         for y in 1..=2 {
             for m in 1..=12 {
@@ -89,14 +86,65 @@ impl AlphaVantageClient {
                     .text()
                     .await?;
 
-                result.append(&mut parse_intraday_extended(resp, format!("{symbol}/USD"))?);
+                result.append(&mut parsecsv_to_ohlc(resp, format!("{symbol}/USD"))?);
                 thread::sleep(Duration::from_secs(12));
             }
         }
         Ok(result)
     }
-}
 
+    pub async fn intraday<S>(
+        &self,
+        symbol: S,
+        interval: S,
+        adjusted: Option<bool>,
+        outputsize: Option<S>,
+        datatype: Option<S>,
+    ) -> Result<Vec<Ohlc>, Box<dyn Error>>
+    where
+        S: Into<String>,
+    {
+        let call_type = "TIME_SERIES_INTRADAY";
+        let symbol: String = symbol.into();
+        let base_params = format!(
+            "?function={call_type}&symbol={}&interval={}&apikey={}",
+            &symbol,
+            &interval.into(),
+            self.apikey
+        );
+
+        let mut params = base_params;
+        if let Some(adj) = adjusted {
+            params = format!("{params}&adjusted={}", adj.to_string());
+        }
+        if let Some(outputsize) = outputsize {
+            params = format!("{params}&outputsize={}", outputsize.into());
+        }
+        
+        match datatype {
+            Some(datatype) => {
+                let dt_type: String = datatype.into();
+                params = format!("{params}&datatype={}", &dt_type);
+                let resp = reqwest::get(format!("{}{params}", self.base_url))
+                    .await?
+                    .text()
+                    .await?;
+            
+                if dt_type == "json" {
+                    // do something
+                }
+                else if dt_type == "csv" {
+                    return Ok((parsecsv_to_ohlc(resp, format!("{}/USD", &symbol)))?);     
+                }
+            }, 
+            None => {
+                // json: do something
+            }
+        }
+
+        Ok(vec![])
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -108,7 +156,7 @@ mod tests {
             .datetime_from_str("2022-12-19 05:00:00", "%Y-%m-%d %H:%M:%S")
             .unwrap();
 
-        let expected1 = IntradayExtended {
+        let expected1 = Ohlc {
             ticker: "AAPL/USD".into(),
             time: datetime.into(),
             open: 135.82828321847023,
@@ -122,7 +170,7 @@ mod tests {
             .datetime_from_str("2023-01-13 20:00:00", "%Y-%m-%d %H:%M:%S")
             .unwrap();
 
-        let expected2 = IntradayExtended {
+        let expected2 = Ohlc {
             ticker: "AAPL/USD".into(),
             time: datetime.into(),
             open: 134.53,
@@ -132,7 +180,7 @@ mod tests {
             volume: 36689,
         };
 
-        let result = parse_intraday_extended(
+        let result = parsecsv_to_ohlc(
             "time,open,high,low,close,volume
             2022-12-19 05:00:00,135.82828321847023,135.82828321847023,135.0292933171851,135.1191796810797,58474
             2023-01-13 20:00:00,134.53,134.6,134.5,134.55,36689".into(),
@@ -146,6 +194,5 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch() {
-        //fetch_alphavantage().await.unwrap();
     }
 }
