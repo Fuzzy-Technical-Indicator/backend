@@ -1,4 +1,4 @@
-use alphavantage::{AlphaVantageClient, IntradayExtended};
+use alphavantage::{AlphaVantageClient, Ohlc};
 use dotenvy::dotenv;
 use mongodb::bson::{doc};
 use mongodb::options::{FindOneOptions, IndexOptions};
@@ -12,7 +12,7 @@ where
     S: Into<String>,
 {
     let ticker: String = ticker.into();
-    let collection = db.collection::<IntradayExtended>(&ticker);
+    let collection = db.collection::<Ohlc>(&ticker);
 
     let index_options = IndexOptions::builder().unique(Some(true)).build();
     let index = IndexModel::builder()
