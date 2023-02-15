@@ -1,5 +1,4 @@
 use alphavantage::{AlphaVantageClient, Ohlc};
-use dotenvy::dotenv;
 use lambda_runtime::{service_fn, LambdaEvent};
 use mongodb::bson::doc;
 use mongodb::options::{FindOneOptions};
@@ -11,7 +10,7 @@ use serde_json::{json, Value};
 /// - `ticker` e.g. AAPL/USD, TSLA/USD
 async fn update_db(ticker: &String, db: &Database) -> Result<(), lambda_runtime::Error> {
     let collection = db.collection::<Ohlc>(&ticker);
-    let apikey = dotenvy::var("ALPHAVANTAGE_APIKEY").unwrap();
+    let apikey = dotenvy_macro::dotenv!("ALPHAVANTAGE_APIKEY");
 
     let market = AlphaVantageClient::new(apikey);
     let market_data = market
@@ -46,8 +45,7 @@ async fn update_db(ticker: &String, db: &Database) -> Result<(), lambda_runtime:
 }
 
 async fn func(_event: LambdaEvent<Value>) -> Result<Value, lambda_runtime::Error> {
-    dotenv().ok();
-    let url = dotenvy::var("MONGODB_URL")?;
+    let url = dotenvy_macro::dotenv!("MONGODB_URL");
 
     let mut client_options = ClientOptions::parse(url).await?;
     client_options.app_name = Some("seeddb".to_string());
