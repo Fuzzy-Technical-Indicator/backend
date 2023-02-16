@@ -316,6 +316,7 @@ dependencies = [
  "alphavantage",
  "dotenvy",
  "dotenvy_macro",
+ "futures",
  "lambda_runtime",
  "mongodb",
  "serde",

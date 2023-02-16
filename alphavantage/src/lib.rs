@@ -93,6 +93,7 @@ impl AlphaVantageClient {
         Ok(result)
     }
 
+    /// Remember that for free-tier API key the rate limit is 5 API requests per minute and 500 requests per day
     pub async fn intraday<S>(
         &self,
         symbol: S,
