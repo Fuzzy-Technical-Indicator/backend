@@ -1,6 +1,8 @@
 pub mod set;
 pub mod shape;
 
+pub mod temp;
+
 use crate::set::*;
 
 pub struct FuzzyEngine<const N: usize, const M: usize> {
@@ -86,5 +88,41 @@ mod tests {
 
         let mut f_engine = FuzzyEngine::new([rsi.clone()], [rsi]);
         f_engine.add_rule(["medium".into()], ["low".into()]);
+    }
+
+    #[test]
+    fn test_basic() {
+        let temp = LinguisticVar::new(
+            vec![
+                (&triangular(15f64, 1.0, 10f64), "cold"),
+                (&triangular(28f64, 1.0, 10f64), "little cold"),
+                (&triangular(40f64, 1.0, 20f64), "hot"),
+            ],
+            arange(0f64, 50f64, 0.01),
+        );
+        let humidity = LinguisticVar::new(
+            vec![
+                (&triangular(25f64, 1.0, 25f64), "low"),
+                (&triangular(45f64, 1.0, 30f64), "normal"),
+                (&triangular(85f64, 1.0, 25f64), "high"),
+            ],
+            arange(0f64, 100f64, 0.01),
+        );
+        let signal = LinguisticVar::new(
+            vec![
+                (&triangular(0f64, 1.0, 15f64), "weak"),
+                (&triangular(30f64, 1.0, 30f64), "strong"),
+            ],
+            arange(0f64, 50f64, 0.01),
+        );
+
+        let mut f_engine = FuzzyEngine::new([temp, humidity], [signal]);
+
+        f_engine.add_rule(["cold", "low"], ["weak"]);
+        f_engine.add_rule(["little cold", "low"], ["weak"]);
+        f_engine.add_rule(["hot", "low"], ["strong"]);
+
+        let result = f_engine.calculate([25f64, 10f64]);
+        println!("{:?}", result[0].centroid_defuzz());
     }
 }
