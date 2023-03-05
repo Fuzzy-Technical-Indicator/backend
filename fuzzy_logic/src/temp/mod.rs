@@ -1,4 +1,4 @@
-pub fn trapezoidal(a: f64, b: f64, c: f64, d: f64, e: f64) -> impl Fn(f64) -> f64 {
+pub fn trapezoidal(a: f64, b: f64, c: f64, d: f64, e: f64) -> (impl Fn(f64) -> f64 + Copy) {
     move |x| {
         if x >= a && x < b {
             return ((x - a) * e) / (b - a);
@@ -11,7 +11,7 @@ pub fn trapezoidal(a: f64, b: f64, c: f64, d: f64, e: f64) -> impl Fn(f64) -> f6
     }
 }
 
-pub fn triangle(a: f64, b: f64, s: f64) -> impl Fn(f64) -> f64 {
+pub fn triangle(a: f64, b: f64, s: f64) -> (impl Fn(f64) -> f64 + Copy) {
     move |x| {
         if (a - s) <= x && x <= (a + s) {
             return b * (1.0 - (x - a).abs() / s);
@@ -23,12 +23,12 @@ pub fn triangle(a: f64, b: f64, s: f64) -> impl Fn(f64) -> f64 {
 // Generic is the way, every function we use is a closure that is trait object.
 
 /// This implementation is somewhat weird? TODO
-pub struct FuzzySet<F: Fn(f64) -> f64> {
+pub struct FuzzySet<F: Fn(f64) -> f64 + Copy> {
     pub universe: Vec<f64>, // a finite set
     pub membership_f: F,    // a function
 }
 
-impl<F: Fn(f64) -> f64> FuzzySet<F> {
+impl<F: Fn(f64) -> f64 + Copy> FuzzySet<F> {
     pub fn new(universe: &Vec<f64>, fuzzy_f: F) -> Self {
         FuzzySet {
             universe: universe.clone(),
@@ -44,34 +44,27 @@ impl<F: Fn(f64) -> f64> FuzzySet<F> {
 
     /// Return a new FuzzySet with the minimum of the two membership functions,
     /// but the lifetime of new FuzzySet is the same as the original.   
-    pub fn min(&self, input: f64) -> FuzzySet<impl Fn(f64) -> f64 + '_> {
-        FuzzySet::new(&self.universe, minf(&self.membership_f, input))
+    pub fn min(&self, input: f64) -> FuzzySet<impl Fn(f64) -> f64 + Copy> {
+        FuzzySet::new(&self.universe, minf(self.membership_f, input))
     }
 
-
-    pub fn std_union<'a>(
-        &'a self,
-        set: &'a FuzzySet<F>,
-    ) -> Option<FuzzySet<impl Fn(f64) -> f64 + 'a>> {
+    pub fn std_union(&self, set: &FuzzySet<F>) -> Option<FuzzySet<impl Fn(f64) -> f64 + Copy>> {
         if self.universe != set.universe {
             return None;
         }
         Some(FuzzySet::new(
             &self.universe,
-            std_unionf(&self.membership_f, &set.membership_f),
+            std_unionf(self.membership_f, set.membership_f),
         ))
     }
 
-    pub fn std_intersect<'a>(
-        &'a self,
-        set: &'a FuzzySet<F>,
-    ) -> Option<FuzzySet<impl Fn(f64) -> f64 + 'a>> {
+    pub fn std_intersect(&self, set: &FuzzySet<F>) -> Option<FuzzySet<impl Fn(f64) -> f64 + Copy>> {
         if self.universe != set.universe {
             return None;
         }
         Some(FuzzySet::new(
             &self.universe,
-            std_intersectf(&self.membership_f, &set.membership_f),
+            std_intersectf(self.membership_f, set.membership_f),
         ))
     }
 
@@ -93,15 +86,15 @@ impl<F: Fn(f64) -> f64> FuzzySet<F> {
     }
 }
 
-fn minf<F: Fn(f64) -> f64 + Copy>(mf: F, input: f64) -> impl Fn(f64) -> f64 {
+fn minf<F: Fn(f64) -> f64 + Copy>(mf: F, input: f64) -> (impl Fn(f64) -> f64 + Copy) {
     move |x: f64| -> f64 { input.min((mf)(x)) }
 }
 
-fn std_unionf<F: Fn(f64) -> f64 + Copy>(mf1: F, mf2: F) -> impl Fn(f64) -> f64 {
+fn std_unionf<F: Fn(f64) -> f64 + Copy>(mf1: F, mf2: F) -> (impl Fn(f64) -> f64 + Copy) {
     move |x: f64| -> f64 { (mf1)(x).max((mf2)(x)) }
 }
 
-fn std_intersectf<F: Fn(f64) -> f64 + Copy>(mf1: F, mf2: F) -> impl Fn(f64) -> f64 {
+fn std_intersectf<F: Fn(f64) -> f64 + Copy>(mf1: F, mf2: F) -> (impl Fn(f64) -> f64 + Copy) {
     move |x: f64| -> f64 { (mf1)(x).min((mf2)(x)) }
 }
 
