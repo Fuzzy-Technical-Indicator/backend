@@ -116,6 +116,7 @@ impl AlphaVantageClient {
             Some(datatype) => {
                 let dt_type: String = datatype.into();
                 params = format!("{params}&datatype={}", &dt_type);
+                println!("{}", format!("{}{params}", self.base_url));
                 let resp = reqwest::get(format!("{}{params}", self.base_url))
                     .await?
                     .text()

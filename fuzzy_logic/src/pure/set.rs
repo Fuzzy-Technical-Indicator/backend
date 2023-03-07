@@ -1,34 +1,21 @@
-use std::rc::Rc;
-
-type F = Rc<dyn Fn(f64) -> f64>;
-
-pub fn triangle(a: f64, b: f64, s: f64) -> F {
-    Rc::new(move |x| {
-        if (a - s) <= x && x <= (a + s) {
-            return b * (1.0 - (x - a).abs() / s);
-        }
-        0.0
-    })
+fn minf<F: Fn(f64) -> f64 + Copy>(mf: F, input: f64) -> (impl Fn(f64) -> f64 + Copy) {
+    move |x: f64| -> f64 { input.min((mf)(x)) }
 }
 
-fn minf(mf: &F, input: f64) -> F {
-    let f = Rc::clone(mf);
-    Rc::new(move |x: f64| -> f64 { input.min((f)(x)) })
+fn std_unionf<F: Fn(f64) -> f64 + Copy>(mf1: F, mf2: F) -> (impl Fn(f64) -> f64 + Copy) {
+    move |x: f64| -> f64 { (mf1)(x).max((mf2)(x)) }
 }
 
-fn std_unionf(mf1: &F, mf2: &F) -> F {
-    let f1 = Rc::clone(mf1);
-    let f2 = Rc::clone(mf2);
-    Rc::new(move |x: f64| -> f64 { (f1)(x).max((f2)(x)) })
+fn std_intersectf<F: Fn(f64) -> f64 + Copy>(mf1: F, mf2: F) -> (impl Fn(f64) -> f64 + Copy) {
+    move |x: f64| -> f64 { (mf1)(x).min((mf2)(x)) }
 }
 
-#[derive(Clone)]
-pub struct FuzzySet {
+pub struct FuzzySet<F: Fn(f64) -> f64 + Copy> {
     pub universe: Vec<f64>, // a finite set
     pub membership_f: F,    // a function
 }
 
-impl FuzzySet {
+impl<F: Fn(f64) -> f64 + Copy> FuzzySet<F> {
     pub fn new(universe: &Vec<f64>, fuzzy_f: F) -> Self {
         FuzzySet {
             universe: universe.clone(),
@@ -43,19 +30,31 @@ impl FuzzySet {
     }
 
     /// Return a new FuzzySet with the membership function that will not exceed the input value.
-    pub fn min(&self, input: f64) -> FuzzySet {
-        FuzzySet::new(&self.universe, minf(&self.membership_f, input))
+    pub fn min(&self, input: f64) -> FuzzySet<impl Fn(f64) -> f64 + Copy> {
+        FuzzySet::new(&self.universe, minf(self.membership_f, input))
     }
 
     /// Return a new FuzzySet with the membership function that is the standard union (max) of the two FuzzySets.
     /// or None if the two FuzzySets have different universes.
-    pub fn std_union(&self, set: &FuzzySet) -> Option<FuzzySet> {
+    pub fn std_union(&self, set: &FuzzySet<F>) -> Option<FuzzySet<impl Fn(f64) -> f64 + Copy>> {
         if self.universe != set.universe {
             return None;
         }
         Some(FuzzySet::new(
             &self.universe,
-            std_unionf(&self.membership_f, &set.membership_f),
+            std_unionf(self.membership_f, set.membership_f),
+        ))
+    }
+
+    /// Return a new FuzzySet with the membership function that is the standard intersect (min) of the two FuzzySets.
+    /// or None if the two FuzzySets have different universes.
+    pub fn std_intersect(&self, set: &FuzzySet<F>) -> Option<FuzzySet<impl Fn(f64) -> f64 + Copy>> {
+        if self.universe != set.universe {
+            return None;
+        }
+        Some(FuzzySet::new(
+            &self.universe,
+            std_intersectf(self.membership_f, set.membership_f),
         ))
     }
 
@@ -83,23 +82,7 @@ mod tests {
 
     use super::*;
     use crate::arange;
-
-    #[test]
-    fn test_chain_union() {
-        let s1 = FuzzySet::new(&arange(0f64, 10f64, 0.01), triangle(5f64, 0.8f64, 3f64));
-        let s2 = s1.min(0.5f64);
-        let s3 = s2.min(0.2f64);
-        let l = vec![s1, s2, s3];
-
-        let res = l.iter().fold(None, |acc, x| {
-            match acc {
-                None => Some(x.clone()),
-                Some(s) => x.std_union(&s),
-            }
-        }).unwrap();
-
-        assert_eq!(res.degree_of(5f64), 0.8);
-    }
+    use crate::pure::shape::triangle;
 
     #[test]
     fn test_centroid_defuzz() {

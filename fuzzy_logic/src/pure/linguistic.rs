@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::set::FuzzySet;
+use crate::pure::set::FuzzySet;
 
 pub struct LinguisticVar<F: Fn(f64) -> f64 + Copy> {
     pub sets: HashMap<String, FuzzySet<F>>,
@@ -25,7 +25,7 @@ impl<F: Fn(f64) -> f64 + Copy> LinguisticVar<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{arange, shape::triangle};
+    use crate::{arange, pure::shape::triangle};
 
     #[test]
     fn linguistic() {
