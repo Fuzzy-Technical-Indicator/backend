@@ -1,15 +1,6 @@
 use std::rc::Rc;
 
-type F = Rc<dyn Fn(f64) -> f64>;
-
-pub fn triangle(a: f64, b: f64, s: f64) -> F {
-    Rc::new(move |x| {
-        if (a - s) <= x && x <= (a + s) {
-            return b * (1.0 - (x - a).abs() / s);
-        }
-        0.0
-    })
-}
+use crate::F;
 
 fn minf(mf: &F, input: f64) -> F {
     let f = Rc::clone(mf);
@@ -20,6 +11,12 @@ fn std_unionf(mf1: &F, mf2: &F) -> F {
     let f1 = Rc::clone(mf1);
     let f2 = Rc::clone(mf2);
     Rc::new(move |x: f64| -> f64 { (f1)(x).max((f2)(x)) })
+}
+
+fn std_intersectf(mf1: &F, mf2: &F) -> F {
+    let f1 = Rc::clone(mf1);
+    let f2 = Rc::clone(mf2);
+    Rc::new(move |x: f64| -> f64 { (f1)(x).min((f2)(x)) })
 }
 
 #[derive(Clone)]
@@ -59,6 +56,18 @@ impl FuzzySet {
         ))
     }
 
+    /// Return a new FuzzySet with the membership function that is the standard intersect (min) of the two FuzzySets.
+    /// or None if the two FuzzySets have different universes.
+    pub fn std_intersect(&self, set: &FuzzySet) -> Option<FuzzySet> {
+        if self.universe != set.universe {
+            return None;
+        }
+        Some(FuzzySet::new(
+            &self.universe,
+            std_intersectf(&self.membership_f, &set.membership_f),
+        ))
+    }
+
     pub fn centroid_defuzz(&self) -> f64 {
         let mf_sum = self
             .universe
@@ -82,7 +91,7 @@ mod tests {
     use float_cmp::approx_eq;
 
     use super::*;
-    use crate::arange;
+    use crate::{arange, shape::triangle};
 
     #[test]
     fn test_chain_union() {
@@ -91,12 +100,13 @@ mod tests {
         let s3 = s2.min(0.2f64);
         let l = vec![s1, s2, s3];
 
-        let res = l.iter().fold(None, |acc, x| {
-            match acc {
+        let res = l
+            .iter()
+            .fold(None, |acc, x| match acc {
                 None => Some(x.clone()),
                 Some(s) => x.std_union(&s),
-            }
-        }).unwrap();
+            })
+            .unwrap();
 
         assert_eq!(res.degree_of(5f64), 0.8);
     }

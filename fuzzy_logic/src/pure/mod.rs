@@ -1,4 +1,3 @@
-
 use self::linguistic::LinguisticVar;
 use self::set::FuzzySet;
 
@@ -60,9 +59,9 @@ where
                     .collect::<Vec<FuzzySet<_>>>()
             })
             .collect::<Vec<Vec<FuzzySet<_>>>>();
-        
-        /* 
-        let res = outs[0].iter().fold(None, |acc, x| 
+
+        /*
+        let res = outs[0].iter().fold(None, |acc, x|
             match acc {
                 None => Some(*x),
                 Some(acc) => acc.std_union(x)
