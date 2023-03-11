@@ -1,6 +1,7 @@
 use alphavantage::Ohlc;
-use binance::{api::Binance, market::Market, model::KlineSummaries};
+use binance::{api::Binance, market::Market};
 use chrono::{Duration, TimeZone, Utc};
+use db_updater::klines;
 use dotenvy::dotenv;
 use mongodb::{
     bson::doc,
@@ -8,32 +9,6 @@ use mongodb::{
     Client, Database, IndexModel,
 };
 // https://www.binance.com/en/support/announcement/binance-exchange-launched-date-set-115000599831
-
-/// - `ticker` should be in this format "BTC/USDT", "ETH/USDT", "BNB/USDT"
-fn klines1000(market: &Market, ticker: &str, start_time: u64) -> Option<(String, Vec<Ohlc>)> {
-    match market.get_klines(ticker.replace("/", ""), "1h", 1000, start_time, None) {
-        Err(_) => None,
-        Ok(klines) => match klines {
-            KlineSummaries::AllKlineSummaries(klines) => {
-                return Some((
-                    ticker.to_string(),
-                    klines
-                        .iter()
-                        .map(|x| Ohlc {
-                            ticker: ticker.to_string(),
-                            time: Utc.timestamp_millis_opt(x.open_time).unwrap().into(),
-                            open: x.open.parse().unwrap(),
-                            close: x.close.parse().unwrap(),
-                            high: x.high.parse().unwrap(),
-                            low: x.low.parse().unwrap(),
-                            volume: x.volume.parse::<f64>().unwrap() as u64,
-                        })
-                        .collect(),
-                ));
-            }
-        },
-    }
-}
 
 /// Insert the `db` with a of a given `tickers`
 async fn seed_crypto(
@@ -88,8 +63,10 @@ async fn main() {
         let mut t = Utc.with_ymd_and_hms(2017, 6, 14, 0, 0, 0).unwrap();
 
         while t < Utc::now() {
-            let data = klines1000(&market, &c, t.timestamp_millis() as u64).unwrap();
-            seed_crypto(&db, &data.0, &data.1).await.unwrap();
+            let data = klines(&market, &c, Some(1000), Some(t.timestamp_millis() as u64))
+                .await
+                .unwrap();
+            seed_crypto(&db, &c, &data).await.unwrap();
             t = t + Duration::hours(1000);
         }
     }
