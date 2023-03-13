@@ -1,81 +1,24 @@
-use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
 use alphavantage::{AlphaVantageClient, Ohlc};
 use binance::api::Binance;
 use binance::market::Market;
-use db_updater::klines;
-use futures::stream::TryStreamExt;
+use db_updater::{klines, update};
 use lambda_runtime::{service_fn, LambdaEvent};
-use mongodb::bson::{doc, to_document};
-use mongodb::options::FindOptions;
 use mongodb::{options::ClientOptions, Client};
-use mongodb::{Collection, Database};
+use mongodb::{Database};
 use serde_json::{json, Value};
-
-async fn most_recents(
-    limit: i64,
-    collection: &Collection<Ohlc>,
-) -> Result<Vec<Ohlc>, lambda_runtime::Error> {
-    let find_options = FindOptions::builder()
-        .sort(doc! {"time": -1})
-        .limit(Some(limit))
-        .build();
-    let cursor = collection
-        .find(None, find_options)
-        .await
-        .expect("collection is empty?");
-
-    Ok(cursor
-        .try_collect()
-        .await
-        .expect("can't collect mongodb cursor"))
-}
-
-async fn replace_recents(
-    collection: &Collection<Ohlc>,
-    old: &Vec<Ohlc>,
-    new: &Vec<Ohlc>,
-) -> Result<(), lambda_runtime::Error> {
-    let old_map: HashMap<_, _> = old.iter().map(|x| (x.time, x)).collect();
-    let should_update: Vec<_> = new
-        .iter()
-        .filter_map(|x| old_map.get(&x.time).map(|y| (*y, x)))
-        .collect();
-    
-    for (query, update) in should_update {
-        collection
-            .replace_one(to_document(query).unwrap(), update, None)
-            .await
-            .expect("can't update");
-    }
-    Ok(())
-}
-
-async fn insert_new(
-    collection: &Collection<Ohlc>,
-    most_recent: &Ohlc,
-    new: &Vec<Ohlc>,
-) -> Result<(), lambda_runtime::Error> {
-    let new_data: Vec<_> = new
-        .iter()
-        .filter(|x| x.time.gt(&most_recent.time))
-        .collect();
-    if new_data.len() > 0 {
-        collection.insert_many(new_data, None).await.unwrap();
-    };
-    Ok(())
-}
 
 /// This assume the collection in DB is already existed and meet all requirements.
 ///
 /// API rate limit is 5 API requests per minute and 500 requests per day
-/// - `ticker` e.g. AAPL/USD, TSLA/USD
+/// - `ticker`: e.g. AAPL/USD, TSLA/USD
 async fn update_stock(ticker: &String, db: &Database) -> Result<(), lambda_runtime::Error> {
     let collection = db.collection::<Ohlc>(&ticker);
+    
+    // this should be obsolete now, we need to change from alphavantage to finnhub
     let apikey = dotenvy_macro::dotenv!("ALPHAVANTAGE_APIKEY");
-
     let market = AlphaVantageClient::new(apikey);
     let market_data = market
         .intraday(
@@ -87,15 +30,12 @@ async fn update_stock(ticker: &String, db: &Database) -> Result<(), lambda_runti
         )
         .await
         .expect("can't fetch market data");
+    //
 
-    let old: Vec<Ohlc> = most_recents(3, &collection).await?;
-    replace_recents(&collection, &old, &market_data).await?;
-    if let Some(most_recent) = old.first() {
-        insert_new(&collection, most_recent, &market_data).await?;
-    }
-    Ok(())
+    update(&collection, &market_data, 3).await
 }
 
+/// - `ticker`: e.g. BTC/USDT, ETH/USDT
 async fn update_crypto(
     db: &Database,
     market: &Market,
@@ -103,12 +43,7 @@ async fn update_crypto(
 ) -> Result<(), lambda_runtime::Error> {
     let collection = db.collection::<Ohlc>(&ticker);
     let data = klines(&market, &ticker, Some(100), None).await.unwrap();
-    let old: Vec<Ohlc> = most_recents(20, &collection).await?;
-    replace_recents(&collection, &old, &data).await?;
-    if let Some(most_recent) = old.first() {
-        insert_new(&collection, most_recent, &data).await?;
-    }
-    Ok(())
+    update(&collection, &data, 20).await
 }
 
 async fn func(_event: LambdaEvent<Value>) -> Result<Value, lambda_runtime::Error> {
@@ -143,7 +78,7 @@ pub async fn main() -> Result<(), lambda_runtime::Error> {
     Ok(())
 }
 
-/// This is no a good testing -_-
+/// This is not a good testing -_-
 #[cfg(test)]
 mod test {
     use super::*;
