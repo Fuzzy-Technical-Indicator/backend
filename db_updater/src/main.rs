@@ -38,12 +38,12 @@ async fn replace_recents(
     old: &Vec<Ohlc>,
     new: &Vec<Ohlc>,
 ) -> Result<(), lambda_runtime::Error> {
-    let v_map: HashMap<_, _> = old.iter().map(|x| (x.time, x)).collect();
+    let old_map: HashMap<_, _> = old.iter().map(|x| (x.time, x)).collect();
     let should_update: Vec<_> = new
         .iter()
-        .filter_map(|x| v_map.get(&x.time).map(|y| (x, *y)))
+        .filter_map(|x| old_map.get(&x.time).map(|y| (*y, x)))
         .collect();
-
+    
     for (query, update) in should_update {
         collection
             .replace_one(to_document(query).unwrap(), update, None)
@@ -135,6 +135,7 @@ async fn func(_event: LambdaEvent<Value>) -> Result<Value, lambda_runtime::Error
     Ok(json!( { "message": "Okay"}))
 }
 
+// cargo lambda build --release
 #[tokio::main]
 pub async fn main() -> Result<(), lambda_runtime::Error> {
     let func = service_fn(func);
