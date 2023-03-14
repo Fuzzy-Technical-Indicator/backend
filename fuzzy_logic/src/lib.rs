@@ -1,12 +1,12 @@
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 use linguistic::LinguisticVar;
 use set::FuzzySet;
 
+pub mod linguistic;
 pub mod pure;
 pub mod set;
 pub mod shape;
-pub mod linguistic;
 
 type F = Rc<dyn Fn(f64) -> f64>;
 
@@ -25,70 +25,109 @@ pub fn arange(start: f64, stop: f64, interval: f64) -> Vec<f64> {
         .collect::<Vec<f64>>()
 }
 
-pub struct FuzzyEngine<const N: usize, const M: usize>
-{
-    inputs_var: [LinguisticVar; N],
-    outputs_var: [LinguisticVar; M],
-    rules: Vec<(Vec<String>, Vec<String>)>, // list of ([input1_term, input2_term, ...] -> output_term)
-    // maybe rules should be a list of pair (linguistic_var, term) => (linguistic_var, term)
+// Vec<Rule>
+// Hashmap<String, LinguisticVar>
+
+type Rule = (Vec<(String, String)>, Vec<(String, String)>);
+
+pub struct FuzzyEngine {
+    inputs_var: HashMap<String, LinguisticVar>,
+    outputs_var: HashMap<String, LinguisticVar>,
+    rules: Vec<Rule>,
 }
 
-impl<const N: usize, const M: usize> FuzzyEngine<N, M> {
-    pub fn new(inputs_var: [LinguisticVar; N], output_var: [LinguisticVar; M]) -> Self {
+impl FuzzyEngine {
+    pub fn new() -> Self {
         FuzzyEngine {
+            inputs_var: HashMap::new(),
+            outputs_var: HashMap::new(),
+            rules: Vec::new(),
+        }
+    }
+
+    pub fn add_cond(self, name: &str, var: LinguisticVar) -> Self {
+        let mut inputs_var = self.inputs_var;
+        inputs_var.insert(name.to_string(), var);
+        Self {
             inputs_var,
-            outputs_var: output_var,
-            rules: Vec::<(Vec<String>, Vec<String>)>::new(),
+            outputs_var: self.outputs_var,
+            rules: self.rules,
         }
     }
 
-    /// has side effect, mutates self
-    /* 
-    pub fn add_rule(&mut self, cond: [&str; N], res: [&str; M]) {
-        for i in 0..self.inputs_var.len() {
-            self.inputs_var[i].term(&cond[i]); // check if term "cond[i]" exist
+    pub fn add_output(self, name: &str, var: LinguisticVar) -> Self {
+        let mut outputs_var = self.outputs_var;
+        outputs_var.insert(name.to_string(), var);
+        Self {
+            inputs_var: self.inputs_var,
+            outputs_var,
+            rules: self.rules,
         }
-        for i in 0..self.outputs_var.len() {
-            self.outputs_var[i].term(&res[i]); // term() check if term "res" is exist
-        }
-
-        let conditions: Vec<String> = cond.iter().map(|x| x.to_string()).collect();
-        let results: Vec<String> = res.iter().map(|x| x.to_string()).collect();
-        self.rules.push((conditions, results));
     }
-    */
 
-    pub fn calculate(&self, inputs: [f64; N]) -> Vec<Option<FuzzySet>> {
-        self
-            .rules
+    pub fn add_rule(self, cond: Vec<(&str, &str)>, output: Vec<(&str, &str)>) -> Self {
+        // This side effect is negligible ?
+        let mut rules = self.rules;
+        rules.push((
+            cond.iter()
+                .map(|(var, term)| (var.to_string(), term.to_string()))
+                .collect::<Vec<(String, String)>>(),
+            output
+                .iter()
+                .map(|(var, term)| (var.to_string(), term.to_string()))
+                .collect::<Vec<(String, String)>>(),
+        ));
+        Self {
+            inputs_var: self.inputs_var,
+            outputs_var: self.outputs_var,
+            rules,
+        }
+    }
+
+    pub fn inference(&self, inputs: Vec<(&str, f64)>) -> Vec<Option<FuzzySet>> {
+        let inputs_map: HashMap<_, _> = HashMap::from_iter(inputs.iter().map(|(k, v)| (k.to_string(), *v)));
+
+        self.rules
             .iter()
             .map(|(cond, res)| {
                 let aj = cond
                     .iter()
-                    .enumerate()
-                    .map(|(i, x)| self.inputs_var[i].term(x).unwrap().degree_of(inputs[i]))
+                    .map(|(var, term)| {
+                        self.inputs_var
+                            .get(var)
+                            .unwrap()
+                            .term(term)
+                            .unwrap()
+                            .degree_of(*inputs_map.get(var).unwrap())
+                    })
                     .min_by(|a, b| a.partial_cmp(b).unwrap())
                     .unwrap();
 
-                let out = res.iter()
-                    .enumerate()
-                    .map(|(i, x)| self.outputs_var[i].term(x).unwrap().min(aj))
+                let out = res
+                    .iter()
+                    .map(|(var, term)| {
+                        self.outputs_var
+                            .get(var)
+                            .unwrap()
+                            .term(term)
+                            .unwrap()
+                            .min(aj)
+                    })
                     .collect::<Vec<FuzzySet>>();
-                
-                out.iter().fold(None, |acc, x| 
-                    match acc {
-                        None => Some(x.clone()),
-                        Some(y) => y.std_union(x)
-                    }
-                )
+
+                out.iter().fold(None, |acc, x| match acc {
+                    None => Some(x.clone()),
+                    Some(y) => y.std_union(x),
+                })
             })
             .collect::<Vec<Option<FuzzySet>>>()
     }
 }
 
-
 #[cfg(test)]
 mod tests {
+    use crate::shape::triangle;
+
     use super::*;
 
     #[test]
@@ -101,55 +140,74 @@ mod tests {
     }
 
     /*
-       #[test]
-       #[should_panic]
-       fn test_adding_rule() {
-           let rsi = LinguisticVar::new(
-               vec![
-                   (&triangular(20f64, 1.0, 20f64), "low"),
-                   (&triangular(80f64, 1.0, 20f64), "high"),
-               ],
-               arange(0f64, 100f64, 0.01),
-           );
+    #[test]
+    #[should_panic]
+    fn test_adding_rule() {
+        let rsi = LinguisticVar::new(
+            vec![
+                (&triangular(20f64, 1.0, 20f64), "low"),
+                (&triangular(80f64, 1.0, 20f64), "high"),
+            ],
+            arange(0f64, 100f64, 0.01),
+        );
 
-           let mut f_engine = FuzzyEngine::new([rsi.clone()], [rsi]);
-           f_engine.add_rule(["medium".into()], ["low".into()]);
-       }
-
-       #[test]
-       fn test_basic() {
-           let temp = LinguisticVar::new(
-               vec![
-                   (&triangular(15f64, 1.0, 10f64), "cold"),
-                   (&triangular(28f64, 1.0, 10f64), "little cold"),
-                   (&triangular(40f64, 1.0, 20f64), "hot"),
-               ],
-               arange(0f64, 50f64, 0.01),
-           );
-           let humidity = LinguisticVar::new(
-               vec![
-                   (&triangular(25f64, 1.0, 25f64), "low"),
-                   (&triangular(45f64, 1.0, 30f64), "normal"),
-                   (&triangular(85f64, 1.0, 25f64), "high"),
-               ],
-               arange(0f64, 100f64, 0.01),
-           );
-           let signal = LinguisticVar::new(
-               vec![
-                   (&triangular(0f64, 1.0, 15f64), "weak"),
-                   (&triangular(30f64, 1.0, 30f64), "strong"),
-               ],
-               arange(0f64, 50f64, 0.01),
-           );
-
-           let mut f_engine = FuzzyEngine::new([temp, humidity], [signal]);
-
-           f_engine.add_rule(["cold", "low"], ["weak"]);
-           f_engine.add_rule(["little cold", "low"], ["weak"]);
-           f_engine.add_rule(["hot", "low"], ["strong"]);
-
-           let result = f_engine.calculate([25f64, 10f64]);
-           println!("{:?}", result[0].centroid_defuzz());
-       }
+        let mut f_engine = FuzzyEngine::new([rsi.clone()], [rsi]);
+        f_engine.add_rule(["medium".into()], ["low".into()]);
+    }
     */
+
+    #[test]
+    fn test_basic() {
+        let f_engine = FuzzyEngine::new()
+            .add_cond(
+                "temp",
+                LinguisticVar::new(
+                    vec![
+                        ("cold", triangle(15f64, 1.0, 10f64)),
+                        ("little cold", triangle(28f64, 1.0, 10f64)),
+                        ("hot", triangle(40f64, 1.0, 20f64)),
+                    ],
+                    arange(0f64, 50f64, 0.01),
+                ),
+            )
+            .add_cond(
+                "humidity",
+                LinguisticVar::new(
+                    vec![
+                        ("low", triangle(25f64, 1.0, 25f64)),
+                        ("normal", triangle(45f64, 1.0, 30f64)),
+                        ("high", triangle(85f64, 1.0, 25f64)),
+                    ],
+                    arange(0f64, 100f64, 0.01),
+                ),
+            )
+            .add_output(
+                "signal",
+                LinguisticVar::new(
+                    vec![
+                        ("weak", triangle(0f64, 1.0, 15f64)),
+                        ("strong", triangle(30f64, 1.0, 30f64)),
+                    ],
+                    arange(0f64, 50f64, 0.01),
+                ),
+            )
+            .add_rule(
+                vec![("temp", "cold"), ("humidity", "low")],
+                vec![("signal", "weak")],
+            )
+            .add_rule(
+                vec![("temp", "little cold"), ("humidity", "low")],
+                vec![("signal", "weak")],
+            )
+            .add_rule(
+                vec![("temp", "hot"), ("humidity", "low")],
+                vec![("signal", "strong")],
+            );
+
+        let result = f_engine.inference(vec![("temp", 19f64), ("humidity", 10f64)]);
+        match result[0] {
+            Some(ref x) => println!("{:?}", x.centroid_defuzz()),
+            _ => println!("None"),
+        }
+    }
 }
