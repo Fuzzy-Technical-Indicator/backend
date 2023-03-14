@@ -1,7 +1,6 @@
-use alphavantage::Ohlc;
 use binance::{api::Binance, market::Market};
 use chrono::{Duration, TimeZone, Utc};
-use db_updater::klines;
+use db_updater::{klines, Ohlc};
 use dotenvy::dotenv;
 use mongodb::{
     bson::doc,

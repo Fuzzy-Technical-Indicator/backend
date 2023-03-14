@@ -1,13 +1,13 @@
 use std::thread;
 use std::time::Duration;
 
-use alphavantage::{AlphaVantageClient, Ohlc};
 use binance::api::Binance;
 use binance::market::Market;
-use db_updater::{klines, update};
+use db_updater::alphavantage::AlphaVantageClient;
+use db_updater::{klines, update, Ohlc};
 use lambda_runtime::{service_fn, LambdaEvent};
+use mongodb::Database;
 use mongodb::{options::ClientOptions, Client};
-use mongodb::{Database};
 use serde_json::{json, Value};
 
 /// This assume the collection in DB is already existed and meet all requirements.
@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 /// - `ticker`: e.g. AAPL/USD, TSLA/USD
 async fn update_stock(ticker: &String, db: &Database) -> Result<(), lambda_runtime::Error> {
     let collection = db.collection::<Ohlc>(&ticker);
-    
+
     // this should be obsolete now, we need to change from alphavantage to finnhub
     let apikey = dotenvy_macro::dotenv!("ALPHAVANTAGE_APIKEY");
     let market = AlphaVantageClient::new(apikey);

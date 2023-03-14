@@ -1,19 +1,9 @@
 use chrono::{TimeZone, Utc};
-use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::thread;
 use std::time::Duration;
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct Ohlc {
-    pub ticker: String,
-    pub time: bson::DateTime,
-    pub open: f64,
-    pub close: f64,
-    pub high: f64,
-    pub low: f64,
-    pub volume: u64,
-}
+use crate::Ohlc;
 
 fn parsecsv_to_ohlc(resp: String, symbol: String) -> Result<Vec<Ohlc>, Box<dyn Error>> {
     let mut rdr = csv::Reader::from_reader(resp.as_bytes());
@@ -121,7 +111,7 @@ impl AlphaVantageClient {
         if let Some(outputsize) = outputsize {
             params = format!("{params}&outputsize={}", outputsize.into());
         }
-        
+
         match datatype {
             Some(datatype) => {
                 let dt_type: String = datatype.into();
@@ -130,14 +120,13 @@ impl AlphaVantageClient {
                     .await?
                     .text()
                     .await?;
-            
+
                 if dt_type == "json" {
                     // do something
+                } else if dt_type == "csv" {
+                    return Ok((parsecsv_to_ohlc(resp, format!("{}/USD", &symbol)))?);
                 }
-                else if dt_type == "csv" {
-                    return Ok((parsecsv_to_ohlc(resp, format!("{}/USD", &symbol)))?);     
-                }
-            }, 
+            }
             None => {
                 // json: do something
             }
@@ -191,9 +180,5 @@ mod tests {
 
         assert_eq!(expected1, result[0]);
         assert_eq!(expected2, result[1]);
-    }
-
-    #[tokio::test]
-    async fn test_fetch() {
     }
 }

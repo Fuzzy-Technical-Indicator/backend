@@ -1,10 +1,28 @@
 use std::collections::HashMap;
 
-use alphavantage::Ohlc;
 use binance::{market::Market, rest_model::KlineSummaries};
 use chrono::{TimeZone, Utc};
 use futures::stream::TryStreamExt;
-use mongodb::{Collection, bson::{to_document, doc}, options::FindOptions, Database};
+use mongodb::{
+    bson::{self, doc, to_document},
+    options::FindOptions,
+    Collection,
+};
+use serde::{Deserialize, Serialize};
+
+pub mod alphavantage;
+pub mod finnhub;
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct Ohlc {
+    pub ticker: String,
+    pub time: bson::DateTime,
+    pub open: f64,
+    pub close: f64,
+    pub high: f64,
+    pub low: f64,
+    pub volume: u64,
+}
 
 /// - `ticker` should be in this format "BTC/USDT", "ETH/USDT", "BNB/USDT"
 /// - limit shoud be in range 0-1000
@@ -42,7 +60,7 @@ pub async fn klines(
 
 pub async fn most_recents(
     collection: &Collection<Ohlc>,
-    limit: u64
+    limit: u64,
 ) -> Result<Vec<Ohlc>, lambda_runtime::Error> {
     let find_options = FindOptions::builder()
         .sort(doc! {"time": -1})
@@ -69,7 +87,7 @@ pub async fn replace_recents(
         .iter()
         .filter_map(|x| old_map.get(&x.time).map(|y| (*y, x)))
         .collect();
-    
+
     for (query, update) in should_update {
         collection
             .replace_one(to_document(query).unwrap(), update, None)
@@ -95,7 +113,11 @@ pub async fn insert_new(
 }
 
 /// replace #`recents` of old data with new data, and insert the remainings
-pub async fn update(collection: &Collection<Ohlc>, new_data: &Vec<Ohlc>, recents: u64) -> Result<(), lambda_runtime::Error> {
+pub async fn update(
+    collection: &Collection<Ohlc>,
+    new_data: &Vec<Ohlc>,
+    recents: u64,
+) -> Result<(), lambda_runtime::Error> {
     let old: Vec<Ohlc> = most_recents(&collection, recents).await?;
     replace_recents(&collection, &old, &new_data).await?;
     if let Some(most_recent) = old.first() {

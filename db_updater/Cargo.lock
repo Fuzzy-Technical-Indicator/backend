@@ -14,18 +14,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alphavantage"
-version = "0.1.0"
-dependencies = [
- "bson",
- "chrono",
- "csv",
- "reqwest",
- "serde",
- "tokio",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -241,9 +229,9 @@ dependencies = [
 
 [[package]]
 name = "csv"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af91f40b7355f82b0a891f50e70399475945bb0b0da4f1700ce60761c9d3e359"
+checksum = "0b015497079b9a9d69c02ad25de6c0a6edef051ea6360a327d0bd05802ef64ad"
 dependencies = [
  "csv-core",
  "itoa",
@@ -349,14 +337,15 @@ checksum = "23d8666cb01533c39dde32bcbab8e227b4ed6679b2c925eba05feabea39508fb"
 name = "db_updater"
 version = "0.1.0"
 dependencies = [
- "alphavantage",
  "binance-rs-async",
  "chrono",
+ "csv",
  "dotenvy",
  "dotenvy_macro",
  "futures",
  "lambda_runtime",
  "mongodb",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -1087,15 +1076,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 
 [[package]]
-name = "openssl-src"
-version = "111.25.0+1.1.1t"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3173cd3626c43e3854b1b727422a276e568d9ec5fe8cec197822cf52cfb743d6"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "openssl-sys"
 version = "0.9.80"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1104,7 +1084,6 @@ dependencies = [
  "autocfg",
  "cc",
  "libc",
- "openssl-src",
  "pkg-config",
  "vcpkg",
 ]

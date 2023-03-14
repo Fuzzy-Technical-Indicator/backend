@@ -1,15 +1,15 @@
-use alphavantage::Ohlc;
-use binance::{market::Market, api::Binance};
-use db_updater::klines;
-use mongodb::{Database, options::ClientOptions, Client};
+use binance::{api::Binance, market::Market};
+use db_updater::{klines, Ohlc};
+use mongodb::{options::ClientOptions, Client, Database};
 
+/// Should be deprecated!
 
 /// - `ticker`: e.g. BTC/USDT, ETH/USDT
 async fn update_crypto(
     db: &Database,
     market: &Market,
     ticker: &str,
-    recents: u16
+    recents: u16,
 ) -> Result<(), lambda_runtime::Error> {
     let collection = db.collection::<Ohlc>(&ticker);
     let data = klines(&market, &ticker, Some(recents), None).await.unwrap();

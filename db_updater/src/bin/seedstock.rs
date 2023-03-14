@@ -1,4 +1,5 @@
-use alphavantage::{AlphaVantageClient, Ohlc};
+use db_updater::alphavantage::AlphaVantageClient;
+use db_updater::Ohlc;
 use dotenvy::dotenv;
 use mongodb::bson::doc;
 use mongodb::options::{FindOneOptions, IndexOptions};
