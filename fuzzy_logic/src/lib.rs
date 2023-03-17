@@ -207,18 +207,23 @@ mod tests {
                 vec![("signal", "strong")],
             );
 
-        plot_linguistic(&f_engine.inputs_var.get("temp").unwrap(), "temp", "images").unwrap();
+        plot_linguistic(
+            &f_engine.inputs_var.get("temp").unwrap(),
+            "temp",
+            "images/t.svg",
+        )
+        .unwrap();
         plot_linguistic(
             &f_engine.inputs_var.get("humidity").unwrap(),
             "humidity",
-            "images",
+            "images/h.svg",
         )
         .unwrap();
 
         let result = f_engine.inference(vec![("temp", 19f64), ("humidity", 10f64)]);
         match result[0] {
             Some(ref x) => {
-                plot::plot_set(x, "test", "images").unwrap();
+                plot::plot_set(x, "signal", "images/r.svg").unwrap();
                 println!("{:?}", x.centroid_defuzz())
             }
             _ => println!("None"),
