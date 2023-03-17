@@ -3,8 +3,10 @@ use std::{collections::HashMap, rc::Rc};
 use linguistic::LinguisticVar;
 use set::FuzzySet;
 
-pub mod linguistic;
 pub mod pure;
+
+pub mod linguistic;
+pub mod plot;
 pub mod set;
 pub mod shape;
 
@@ -85,7 +87,8 @@ impl FuzzyEngine {
     }
 
     pub fn inference(&self, inputs: Vec<(&str, f64)>) -> Vec<Option<FuzzySet>> {
-        let inputs_map: HashMap<_, _> = HashMap::from_iter(inputs.iter().map(|(k, v)| (k.to_string(), *v)));
+        let inputs_map: HashMap<_, _> =
+            HashMap::from_iter(inputs.iter().map(|(k, v)| (k.to_string(), *v)));
 
         self.rules
             .iter()
@@ -126,7 +129,7 @@ impl FuzzyEngine {
 
 #[cfg(test)]
 mod tests {
-    use crate::shape::triangle;
+    use crate::{plot::plot_linguistic, shape::triangle};
 
     use super::*;
 
@@ -204,9 +207,20 @@ mod tests {
                 vec![("signal", "strong")],
             );
 
+        plot_linguistic(&f_engine.inputs_var.get("temp").unwrap(), "temp", "images").unwrap();
+        plot_linguistic(
+            &f_engine.inputs_var.get("humidity").unwrap(),
+            "humidity",
+            "images",
+        )
+        .unwrap();
+
         let result = f_engine.inference(vec![("temp", 19f64), ("humidity", 10f64)]);
         match result[0] {
-            Some(ref x) => println!("{:?}", x.centroid_defuzz()),
+            Some(ref x) => {
+                plot::plot_set(x, "test", "images").unwrap();
+                println!("{:?}", x.centroid_defuzz())
+            }
             _ => println!("None"),
         }
     }
