@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::F;
+use crate::{arange, F};
 
 fn minf(mf: &F, input: f64) -> F {
     let f = Rc::clone(mf);
@@ -21,27 +21,38 @@ fn std_intersectf(mf1: &F, mf2: &F) -> F {
 
 #[derive(Clone)]
 pub struct FuzzySet {
-    pub universe: Vec<f64>, // a finite set
-    pub membership_f: F,    // a function
+    pub universe: (f64, f64), // a range
+    pub membership_f: F,      // a function
 }
 
 impl FuzzySet {
-    pub fn new(universe: &Vec<f64>, fuzzy_f: F) -> Self {
+    pub fn new(universe: (f64, f64), fuzzy_f: F) -> Self {
+        if universe.1 < universe.0 {
+            panic!("end can not be less than start");
+        }
+
         FuzzySet {
-            universe: universe.clone(),
+            universe: universe,
             membership_f: fuzzy_f,
         }
     }
 
+    pub fn get_finite_universe(&self, resolution: f64) -> Vec<f64> {
+        arange(self.universe.0, self.universe.1, resolution)
+    }
+
     /// Return the degree of membership of the input value in the FuzzySet.
     pub fn degree_of(&self, input: f64) -> f64 {
-        let result = (self.membership_f)(input);
-        result.min(1f64).max(0f64)
+        if input >= self.universe.0 && input <= self.universe.1 {
+            (self.membership_f)(input).min(1f64).max(0f64)
+        } else {
+            0f64
+        }
     }
 
     /// Return a new FuzzySet with the membership function that will not exceed the input value.
     pub fn min(&self, input: f64) -> FuzzySet {
-        FuzzySet::new(&self.universe, minf(&self.membership_f, input))
+        FuzzySet::new(self.universe, minf(&self.membership_f, input))
     }
 
     /// Return a new FuzzySet with the membership function that is the standard union (max) of the two FuzzySets.
@@ -51,7 +62,7 @@ impl FuzzySet {
             return None;
         }
         Some(FuzzySet::new(
-            &self.universe,
+            self.universe,
             std_unionf(&self.membership_f, &set.membership_f),
         ))
     }
@@ -63,14 +74,14 @@ impl FuzzySet {
             return None;
         }
         Some(FuzzySet::new(
-            &self.universe,
+            self.universe,
             std_intersectf(&self.membership_f, &set.membership_f),
         ))
     }
 
-    pub fn centroid_defuzz(&self) -> f64 {
-        let mf_sum = self
-            .universe
+    pub fn centroid_defuzz(&self, resolution: f64) -> f64 {
+        let universe = self.get_finite_universe(resolution);
+        let mf_sum = universe
             .iter()
             .fold(0.0, |s, v| s + (self.membership_f)(*v));
 
@@ -78,8 +89,7 @@ impl FuzzySet {
             return 0.0;
         }
 
-        let mfweighted_sum = self
-            .universe
+        let mfweighted_sum = universe
             .iter()
             .fold(0.0, |s, x| s + ((self.membership_f)(*x) * x));
         mfweighted_sum / mf_sum
@@ -91,11 +101,17 @@ mod tests {
     use float_cmp::approx_eq;
 
     use super::*;
-    use crate::{arange, shape::triangle};
+    use crate::shape::triangle;
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_universe() {
+        let s1 = FuzzySet::new((10f64, 0f64), triangle(5f64, 0.8f64, 3f64));
+    }
 
     #[test]
     fn test_chain_union() {
-        let s1 = FuzzySet::new(&arange(0f64, 10f64, 0.01), triangle(5f64, 0.8f64, 3f64));
+        let s1 = FuzzySet::new((0f64, 10f64), triangle(5f64, 0.8f64, 3f64));
         let s2 = s1.min(0.5f64);
         let s3 = s2.min(0.2f64);
         let l = vec![s1, s2, s3];
@@ -113,13 +129,18 @@ mod tests {
 
     #[test]
     fn test_centroid_defuzz() {
-        let s1 = FuzzySet::new(&arange(0f64, 10f64, 0.01), triangle(5f64, 0.8f64, 3f64));
-        assert!(approx_eq!(f64, s1.centroid_defuzz(), 5f64, epsilon = 1e-6));
+        let s1 = FuzzySet::new((0f64, 10f64), triangle(5f64, 0.8f64, 3f64));
+        assert!(approx_eq!(
+            f64,
+            s1.centroid_defuzz(0.01),
+            5f64,
+            epsilon = 1e-6
+        ));
     }
 
     #[test]
     fn test_min() {
-        let s1 = FuzzySet::new(&arange(0f64, 10f64, 0.01), triangle(5f64, 0.8f64, 3f64));
+        let s1 = FuzzySet::new((0f64, 10f64), triangle(5f64, 0.8f64, 3f64));
         let s2 = s1.min(0.5f64);
 
         assert_eq!(s1.degree_of(5.0f64), 0.8);
@@ -128,12 +149,19 @@ mod tests {
 
     #[test]
     fn test_degree() {
-        let s1 = FuzzySet::new(&arange(0f64, 10f64, 0.01), triangle(5f64, 0.8f64, 3f64));
+        let s1 = FuzzySet::new((0f64, 10f64), triangle(5f64, 0.8f64, 3f64));
 
         assert_eq!(s1.degree_of(11.0f64), 0.0);
         assert_eq!(s1.degree_of(5.0f64), 0.8);
         assert_eq!(s1.degree_of(3.5f64), 0.4);
         assert_eq!(s1.degree_of(0.0f64), 0.0);
+        assert_eq!(s1.degree_of(-1.0f64), 0.0);
+    }
+
+    #[test]
+    fn test_degree_out_of_range() {
+        let s1 = FuzzySet::new((0f64, 10f64), triangle(5f64, 0.8f64, 20f64));
+        assert_eq!(s1.degree_of(11.0f64), 0.0);
         assert_eq!(s1.degree_of(-1.0f64), 0.0);
     }
 }

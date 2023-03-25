@@ -17,7 +17,7 @@ const FONT: &str = "Arial";
 fn config_chart<'a, DB: DrawingBackend>(
     chart: &'a mut ChartBuilder<'a, '_, DB>,
     title: &str,
-    universe: &Vec<f64>,
+    universe: (f64, f64),
 ) -> ChartContext<'a, DB, Cartesian2d<RangedCoordf64, RangedCoordf64>> {
     chart
         .caption(title, (FONT, 44, FontStyle::Bold).into_font())
@@ -26,10 +26,7 @@ fn config_chart<'a, DB: DrawingBackend>(
         .margin(60);
 
     let mut c = chart
-        .build_cartesian_2d(
-            *universe.first().unwrap()..*universe.last().unwrap(),
-            0f64..1f64,
-        )
+        .build_cartesian_2d(universe.0..universe.1, 0f64..1f64)
         .unwrap();
 
     c.configure_mesh()
@@ -61,13 +58,15 @@ pub fn plot_linguistic(var: &LinguisticVar, title: &str, path: &str) -> Result<(
     root.fill(&WHITE)?;
 
     let mut chart_b = ChartBuilder::on(&root);
-    let mut chart = config_chart(&mut chart_b, title, &var.universe);
+    let mut chart = config_chart(&mut chart_b, title, var.universe);
 
     for (i, (k, v)) in var.sets.iter().enumerate() {
         let color = Palette99::pick(i);
         chart
             .draw_series(LineSeries::new(
-                var.universe.iter().map(|x| (*x, v.degree_of(*x))),
+                var.get_finite_universe(0.01)
+                    .iter()
+                    .map(|x| (*x, v.degree_of(*x))),
                 color.mix(0.5).stroke_width(4),
             ))?
             .label(k)
@@ -86,12 +85,14 @@ pub fn plot_set(set: &FuzzySet, title: &str, path: &str) -> Result<(), Box<dyn E
     root.fill(&WHITE)?;
 
     let mut chart_b = ChartBuilder::on(&root);
-    let mut chart = config_chart(&mut chart_b, title, &set.universe);
+    let mut chart = config_chart(&mut chart_b, title, set.universe);
 
     let color = Palette99::pick(0);
     chart
         .draw_series(LineSeries::new(
-            set.universe.iter().map(|x| (*x, set.degree_of(*x))),
+            set.get_finite_universe(0.01)
+                .iter()
+                .map(|x| (*x, set.degree_of(*x))),
             color.stroke_width(4),
         ))?
         .label(title)
