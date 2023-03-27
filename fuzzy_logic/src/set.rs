@@ -28,7 +28,7 @@ pub struct FuzzySet {
 impl FuzzySet {
     pub fn new(universe: (f64, f64), fuzzy_f: F) -> Self {
         if universe.1 < universe.0 {
-            panic!("end can not be less than start");
+            panic!("universe end can not be less than start");
         }
 
         FuzzySet {
@@ -81,18 +81,16 @@ impl FuzzySet {
 
     pub fn centroid_defuzz(&self, resolution: f64) -> f64 {
         let universe = self.get_finite_universe(resolution);
-        let mf_sum = universe
-            .iter()
-            .fold(0.0, |s, v| s + (self.membership_f)(*v));
-
+        let (mf_sum, mf_weighted_sum) = universe.iter().fold((0.0, 0.0), |(s0, s1), x| {
+            (
+                s0 + (self.membership_f)(*x),
+                s1 + (self.membership_f)(*x) * x,
+            )
+        });
         if mf_sum == 0.0 {
             return 0.0;
         }
-
-        let mfweighted_sum = universe
-            .iter()
-            .fold(0.0, |s, x| s + ((self.membership_f)(*x) * x));
-        mfweighted_sum / mf_sum
+        mf_weighted_sum / mf_sum
     }
 }
 
@@ -106,7 +104,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_invalid_universe() {
-        let s1 = FuzzySet::new((10f64, 0f64), triangle(5f64, 0.8f64, 3f64));
+        let _ = FuzzySet::new((10f64, 0f64), triangle(5f64, 0.8f64, 3f64));
     }
 
     #[test]

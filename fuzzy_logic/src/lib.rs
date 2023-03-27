@@ -146,36 +146,51 @@ impl FuzzyEngine {
         self.rules
             .iter()
             .map(|(cond, res)| {
-                let aj = cond
-                    .iter()
-                    .zip(self.inputs_var.iter())
-                    .zip(inputs.iter())
-                    .map(|((term, var), input)| match term {
-                        None => f64::MAX,
-                        Some(term) => var.term(term).unwrap().degree_of(input.unwrap()),
-                    })
-                    .min_by(|a, b| a.partial_cmp(b).unwrap())
-                    .unwrap();
-
-                let out = res
-                    .iter()
-                    .zip(self.outputs_var.iter())
-                    .map(|(term, var)| match term {
-                        None => None,
-                        Some(term) => Some(var.term(term).unwrap().min(aj)),
-                    })
-                    .collect::<Vec<Option<FuzzySet>>>();
-
-                out.iter().fold(None, |acc, x| match x {
-                    None => acc,
-                    Some(x) => match acc {
-                        None => Some(x.clone()),
-                        Some(y) => y.std_union(x),
-                    },
-                })
+                let aj = compute_aj(&self.inputs_var, cond, &inputs).unwrap();
+                let out = min_sets(&self.outputs_var, res, aj);
+                union_sets(out)
             })
             .collect::<Vec<Option<FuzzySet>>>()
     }
+}
+
+fn compute_aj(
+    inputs_var: &Vec<LinguisticVar>,
+    cond: &Vec<Option<String>>,
+    inputs: &Vec<Option<f64>>,
+) -> Option<f64> {
+    cond.iter()
+        .zip(inputs_var.iter())
+        .zip(inputs.iter())
+        .map(|((term, var), input)| match term {
+            None => 1.0, // membership function should not exceed 1.0
+            Some(term) => var.degree_of(term, input.unwrap()).unwrap_or(1.0),
+        })
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+}
+
+fn min_sets(
+    outputs_var: &Vec<LinguisticVar>,
+    res: &Vec<Option<String>>,
+    aj: f64,
+) -> Vec<Option<FuzzySet>> {
+    res.iter()
+        .zip(outputs_var.iter())
+        .map(|(term, var)| match term {
+            None => None,
+            Some(term) => Some(var.term(term).unwrap().min(aj)),
+        })
+        .collect()
+}
+
+fn union_sets(sets: Vec<Option<FuzzySet>>) -> Option<FuzzySet> {
+    sets.iter().fold(None, |acc, x| match x {
+        None => acc,
+        Some(x) => match acc {
+            None => Some(x.clone()),
+            Some(y) => y.std_union(x),
+        },
+    })
 }
 
 #[cfg(test)]

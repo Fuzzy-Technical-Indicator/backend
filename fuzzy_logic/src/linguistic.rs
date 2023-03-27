@@ -21,6 +21,10 @@ impl LinguisticVar {
         self.sets.get(name)
     }
 
+    pub fn degree_of(&self, name: &str, x: f64) -> Option<f64> {
+        self.sets.get(name).map(|set| set.degree_of(x))
+    }
+
     pub fn get_finite_universe(&self, resolution: f64) -> Vec<f64> {
         arange(self.universe.0, self.universe.1, resolution)
     }
