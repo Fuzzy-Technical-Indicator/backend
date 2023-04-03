@@ -1,41 +1,33 @@
-use std::error::Error;
+use db_updater::Ohlc;
+use futures::stream::TryStreamExt;
+use mongodb::bson::doc;
+use mongodb::options::FindOptions;
+use rocket::serde::json::Json;
+use rocket::{get, launch, routes};
+use rocket_db_pools::{mongodb, Connection, Database};
 
-use rocket_db_pools::{mongodb, Database};
+// we need to specify the database url on Rocket.toml like this
+// [default.databases.marketdata]
+// url = "..."
 #[derive(Database)]
 #[database("marketdata")]
 struct MarketData(mongodb::Client);
 
-#[macro_use]
-extern crate rocket;
+#[get("/ohlc?<symbol>")]
+async fn ohlc(db: Connection<MarketData>, symbol: &str) -> Json<Vec<Ohlc>> {
+    let marketdata = &*db;
+    let db = marketdata.database("StockMarket");
+    let collection = db.collection::<Ohlc>(symbol);
 
-async fn fetch_binance() -> Result<String, Box<dyn Error>> {
-    let base = "https://api.binance.com";
-    let symbol = "BTCUSDT";
-    let interval = "1h";
-    let params = format!("?symbol={}&interval={}", symbol, interval);
-
-    let resp = reqwest::get(format!("{}/{}{}", base, "api/v3/klines", params))
-        .await?
-        .text()
-        .await?;
-
-    Ok(resp)
-}
-
-#[get("/")]
-fn index() -> String {
-    "Hello World".to_string()
-}
-
-#[get("/binance")]
-async fn binance() -> String {
-    fetch_binance().await.unwrap_or("err".into())
+    let find_options = FindOptions::builder().sort(doc! {"time": -1}).build();
+    let result = collection.find(None, find_options).await.unwrap();
+    let data = result.try_collect::<Vec<Ohlc>>().await.unwrap();
+    Json(data)
 }
 
 #[launch]
 fn rocket() -> _ {
     rocket::build()
         .attach(MarketData::init())
-        .mount("/", routes![index])
-        .mount("/", routes![binance])
+        .mount("/api", routes![ohlc])
 }
