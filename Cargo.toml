@@ -16,6 +16,7 @@ mongodb = { version = "2.3.1", features = ["bson-chrono-0_4"] }
 dotenvy = "0.15.6"
 chrono = "0.4.23"
 futures = "0.3"
+rocket_cors = { git = "https://github.com/lawliet89/rocket_cors", branch = "master" }
 
 [dependencies.rocket_db_pools]
 version = "0.1.0-rc.2"
