@@ -96,6 +96,7 @@ impl FinnhubClient {
     }
 }
 
+/// TODO: make more tests
 #[tokio::test]
 async fn t() {
     let apikey = dotenvy_macro::dotenv!("FINNHUB_APIKEY");
@@ -103,7 +104,7 @@ async fn t() {
 
     let now = Utc::now();
     let from = now - Duration::days(1);
-    
+
     println!(
         "{:?}",
         client

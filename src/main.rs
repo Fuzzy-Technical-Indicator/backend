@@ -1,6 +1,7 @@
 use db_updater::Ohlc;
+use db_updater::rsi::RsiValue;
 use futures::stream::TryStreamExt;
-use mongodb::bson::{doc, Document};
+use mongodb::bson::{self, doc, Document};
 use mongodb::Collection;
 use rocket::serde::json::Json;
 use rocket::{get, launch, routes, FromFormField};
@@ -92,6 +93,22 @@ async fn ohlc(
     Json(aggr_fetch(&collection, interval).await)
 }
 
+#[get("/indicator?<symbol>&<kind>&<interval>")]
+async fn indicator(
+    db: Connection<MarketData>,
+    symbol: &str,
+    kind: &str,
+    interval: Option<Interval>,
+) -> Json<Vec<RsiValue>> {
+    let marketdata = &*db;
+    let db = marketdata.database("StockMarket");
+    let collection = db.collection::<Ohlc>(symbol);
+    let data = aggr_fetch(&collection, interval).await;
+
+    // hard code to rsi for now
+    Json(db_updater::rsi::rsi(&data, 14))
+}
+
 #[launch]
 fn rocket() -> _ {
     // Configure CORS options
@@ -102,5 +119,5 @@ fn rocket() -> _ {
     rocket::build()
         .attach(cors)
         .attach(MarketData::init())
-        .mount("/api", routes![ohlc])
+        .mount("/api", routes![ohlc, indicator])
 }

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod alphavantage;
 pub mod finnhub;
+pub mod rsi;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Ohlc {
