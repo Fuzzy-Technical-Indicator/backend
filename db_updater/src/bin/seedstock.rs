@@ -1,11 +1,11 @@
 use db_updater::alphavantage::AlphaVantageClient;
-use db_updater::Ohlc;
 use dotenvy::dotenv;
 use mongodb::bson::doc;
 use mongodb::options::{FindOneOptions, IndexOptions};
 use mongodb::{options::ClientOptions, Client};
 use mongodb::{Database, IndexModel};
 use std::error::Error;
+use tech_indicators::Ohlc;
 
 /// - `ticker` examples: AAPL/USD, TSLA/USD
 pub async fn seed_market<S>(ticker: S, db: &Database) -> Result<(), Box<dyn Error>>

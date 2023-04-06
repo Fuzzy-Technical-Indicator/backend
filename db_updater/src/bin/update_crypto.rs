@@ -1,6 +1,7 @@
 use binance::{api::Binance, market::Market};
-use db_updater::{klines, Ohlc};
+use db_updater::klines;
 use mongodb::{options::ClientOptions, Client, Database};
+use tech_indicators::Ohlc;
 
 /// Should be deprecated!
 

@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use chrono::{DateTime, Duration, TimeZone, Timelike, Utc};
+use chrono::{TimeZone, Utc, Duration};
 use itertools::izip;
 use serde::Deserialize;
 

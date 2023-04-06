@@ -1,12 +1,13 @@
 use binance::{api::Binance, market::Market};
 use chrono::{Duration, TimeZone, Utc};
-use db_updater::{klines, Ohlc};
+use db_updater::klines;
 use dotenvy::dotenv;
 use mongodb::{
     bson::doc,
     options::{ClientOptions, FindOneOptions, IndexOptions},
     Client, Database, IndexModel,
 };
+use tech_indicators::Ohlc;
 // https://www.binance.com/en/support/announcement/binance-exchange-launched-date-set-115000599831
 
 /// Insert the `db` with a of a given `tickers`

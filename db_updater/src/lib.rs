@@ -4,26 +4,14 @@ use binance::{market::Market, rest_model::KlineSummaries};
 use chrono::{TimeZone, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::{
-    bson::{self, doc, to_document},
+    bson::{doc, to_document},
     options::FindOptions,
     Collection,
 };
-use serde::{Deserialize, Serialize};
+use tech_indicators::Ohlc;
 
 pub mod alphavantage;
 pub mod finnhub;
-pub mod rsi;
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct Ohlc {
-    pub ticker: String,
-    pub time: bson::DateTime,
-    pub open: f64,
-    pub close: f64,
-    pub high: f64,
-    pub low: f64,
-    pub volume: u64,
-}
 
 /// - `ticker` should be in this format "BTC/USDT", "ETH/USDT", "BNB/USDT"
 /// - limit shoud be in range 0-1000

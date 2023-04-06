@@ -4,11 +4,12 @@ use std::time::Duration;
 use binance::api::Binance;
 use binance::market::Market;
 use db_updater::alphavantage::AlphaVantageClient;
-use db_updater::{klines, update, Ohlc};
+use db_updater::{klines, update};
 use lambda_runtime::{service_fn, LambdaEvent};
 use mongodb::Database;
 use mongodb::{options::ClientOptions, Client};
 use serde_json::{json, Value};
+use tech_indicators::Ohlc;
 
 /// This assume the collection in DB is already existed and meet all requirements.
 ///

@@ -1,5 +1,4 @@
-use mongodb::bson;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use crate::Ohlc;
 
@@ -25,7 +24,7 @@ fn compute_gainloss(data: &Vec<Ohlc>) -> Vec<(bool, f64)> {
         .collect()
 }
 
-fn avgs_gainloss(gain_loss: &Vec<(bool, f64)>, n: usize) -> (Vec<f64>, Vec<f64>) {
+fn smooth_avgs_gainloss(gain_loss: &Vec<(bool, f64)>, n: usize) -> (Vec<f64>, Vec<f64>) {
     // first n sessions gains and losses
     let mut avg_gain = vec![
         gain_loss
@@ -60,17 +59,57 @@ fn avgs_gainloss(gain_loss: &Vec<(bool, f64)>, n: usize) -> (Vec<f64>, Vec<f64>)
     (avg_gain, avg_loss)
 }
 
-// https://www.omnicalculator.com/finance/rsi
-// using closing price
-pub fn rsi(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
+fn avgs_gainloss(gain_loss: &Vec<(bool, f64)>, n: usize) -> (Vec<f64>, Vec<f64>) {
+    let avg_gain = gain_loss
+        .windows(n)
+        .map(|xs| {
+            xs.iter()
+                .filter(|(is_gain, _)| *is_gain)
+                .map(|(_, change)| change)
+                .sum::<f64>()
+                / n as f64
+        })
+        .collect::<Vec<f64>>();
+
+    let avg_loss = gain_loss
+        .windows(n)
+        .map(|xs| {
+            xs.iter()
+                .filter(|(is_gain, _)| !is_gain)
+                .map(|(_, change)| change)
+                .sum::<f64>()
+                / n as f64
+        })
+        .collect::<Vec<f64>>();
+    (avg_gain, avg_loss)
+}
+
+fn compute_rsi_vec(
+    data: &Vec<Ohlc>,
+    n: usize,
+    gainloss_fn: fn(&Vec<(bool, f64)>, usize) -> (Vec<f64>, Vec<f64>),
+) -> Vec<RsiValue> {
     let gain_loss = compute_gainloss(data);
-    let (avg_gain, avg_loss) = avgs_gainloss(&gain_loss, n);
+    let (avg_gain, avg_loss) = gainloss_fn(&gain_loss, n);
 
     data.iter()
-        .skip(n + 1)
+        .skip(n)
         .zip(avg_gain.iter().zip(avg_loss.iter()))
-        .map(|(curr, (avg_g, avg_l))| RsiValue {time: curr.time, value: compute_rsi(*avg_g, *avg_l)})
+        .map(|(curr, (avg_g, avg_l))| RsiValue {
+            time: curr.time,
+            value: compute_rsi(*avg_g, *avg_l),
+        })
         .collect()
+}
+
+// https://www.omnicalculator.com/finance/rsi
+// using closing price
+pub fn rsi_smooth(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
+    compute_rsi_vec(data, n, smooth_avgs_gainloss)
+}
+
+pub fn rsi(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
+    compute_rsi_vec(data, n, avgs_gainloss)
 }
 
 #[cfg(test)]
@@ -90,7 +129,7 @@ mod test {
             epsilon = 0.1
         ));
     }
-    
+
     fn ohlc_with(close: f64) -> Ohlc {
         Ohlc {
             ticker: "".to_string(),
@@ -130,7 +169,7 @@ mod test {
         // manual test for now, need to write some automated test after
         let dt = test_set();
         let gain_loss = compute_gainloss(&dt);
-        let (avg_gain, avg_loss) = avgs_gainloss(&gain_loss, 14);
+        let (avg_gain, avg_loss) = smooth_avgs_gainloss(&gain_loss, 14);
         println!("{:?}", gain_loss);
         println!("{:?}", avg_gain);
         println!("{:?}", avg_loss);

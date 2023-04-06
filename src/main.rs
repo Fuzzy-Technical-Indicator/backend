@@ -1,12 +1,12 @@
-use db_updater::Ohlc;
-use db_updater::rsi::RsiValue;
 use futures::stream::TryStreamExt;
-use mongodb::bson::{self, doc, Document};
+use mongodb::bson::{doc, Document};
 use mongodb::Collection;
 use rocket::serde::json::Json;
 use rocket::{get, launch, routes, FromFormField};
 use rocket_cors::{CorsOptions, AllowedOrigins, Cors};
 use rocket_db_pools::{mongodb, Connection, Database};
+use tech_indicators::Ohlc;
+use tech_indicators::rsi::{RsiValue, rsi};
 
 // we need to specify the database url on Rocket.toml like this
 // [default.databases.marketdata]
@@ -106,7 +106,7 @@ async fn indicator(
     let data = aggr_fetch(&collection, interval).await;
 
     // hard code to rsi for now
-    Json(db_updater::rsi::rsi(&data, 14))
+    Json(rsi(&data, 14))
 }
 
 #[launch]
