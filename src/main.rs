@@ -3,10 +3,10 @@ use mongodb::bson::{doc, Document};
 use mongodb::Collection;
 use rocket::serde::json::Json;
 use rocket::{get, launch, routes, FromFormField};
-use rocket_cors::{CorsOptions, AllowedOrigins, Cors};
+use rocket_cors::{AllowedOrigins, Cors, CorsOptions};
 use rocket_db_pools::{mongodb, Connection, Database};
-use tech_indicators::Ohlc;
-use tech_indicators::rsi::{RsiValue, rsi};
+use tech_indicators::{bb, DTValue, Ohlc};
+use tech_indicators::{rsi, RsiValue};
 
 // we need to specify the database url on Rocket.toml like this
 // [default.databases.marketdata]
@@ -28,7 +28,12 @@ enum Interval {
 fn aggrdoc_to_ohlc(docs: Vec<Document>) -> Vec<Ohlc> {
     docs.iter()
         .map(|x| Ohlc {
-            ticker: x.get_document("_id").unwrap().get_str("ticker").unwrap().to_string(),
+            ticker: x
+                .get_document("_id")
+                .unwrap()
+                .get_str("ticker")
+                .unwrap()
+                .to_string(),
             time: x
                 .get_document("_id")
                 .unwrap()
@@ -80,44 +85,53 @@ async fn aggr_fetch(collection: &Collection<Ohlc>, interval: Option<Interval>) -
     aggrdoc_to_ohlc(result.try_collect::<Vec<Document>>().await.unwrap())
 }
 
+async fn fetch_symbol(
+    db: Connection<MarketData>,
+    symbol: &str,
+    interval: Option<Interval>,
+) -> Vec<Ohlc> {
+    let db_client = (&*db).database("StockMarket");
+    let collection = db_client.collection::<Ohlc>(symbol);
+    aggr_fetch(&collection, interval).await
+}
+
 #[get("/ohlc?<symbol>&<interval>")]
 async fn ohlc(
     db: Connection<MarketData>,
     symbol: &str,
     interval: Option<Interval>,
 ) -> Json<Vec<Ohlc>> {
-    let marketdata = &*db;
-    let db = marketdata.database("StockMarket");
-    let collection = db.collection::<Ohlc>(symbol);
-
-    Json(aggr_fetch(&collection, interval).await)
+    Json(fetch_symbol(db, symbol, interval).await)
 }
 
-#[get("/indicator?<symbol>&<kind>&<interval>")]
-async fn indicator(
+#[get("/indicator/rsi?<symbol>&<interval>")]
+async fn indicator_rsi(
     db: Connection<MarketData>,
     symbol: &str,
-    kind: &str,
     interval: Option<Interval>,
 ) -> Json<Vec<RsiValue>> {
-    let marketdata = &*db;
-    let db = marketdata.database("StockMarket");
-    let collection = db.collection::<Ohlc>(symbol);
-    let data = aggr_fetch(&collection, interval).await;
-
-    // hard code to rsi for now
+    let data = fetch_symbol(db, symbol, interval).await;
     Json(rsi(&data, 14))
+}
+
+#[get("/indicator/bb?<symbol>&<interval>")]
+async fn indicator_bb(
+    db: Connection<MarketData>,
+    symbol: &str,
+    interval: Option<Interval>,
+) -> Json<Vec<DTValue<(f64, f64, f64)>>> {
+    let data = fetch_symbol(db, symbol, interval).await;
+    Json(bb(&data, 20, 2.0))
 }
 
 #[launch]
 fn rocket() -> _ {
     // Configure CORS options
-    let cors_option = CorsOptions::default()
-        .allowed_origins(AllowedOrigins::All);         
+    let cors_option = CorsOptions::default().allowed_origins(AllowedOrigins::All);
     let cors = Cors::from_options(&cors_option).unwrap();
 
     rocket::build()
         .attach(cors)
         .attach(MarketData::init())
-        .mount("/api", routes![ohlc, indicator])
+        .mount("/api", routes![ohlc, indicator_rsi, indicator_bb])
 }

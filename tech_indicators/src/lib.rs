@@ -1,5 +1,6 @@
-pub mod rsi;
+pub mod rsi_utills;
 
+use rsi_utills::{compute_rsi_vec, rma_rs, smooth_rs};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -11,6 +12,18 @@ pub struct Ohlc {
     pub high: f64,
     pub low: f64,
     pub volume: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct RsiValue {
+    time: bson::DateTime,
+    value: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct DTValue<T> {
+    time: bson::DateTime,
+    value: T,
 }
 
 /// Simple Moving Average
@@ -36,28 +49,76 @@ pub fn rma(src: &Vec<f64>, n: usize) -> Vec<f64> {
     rma
 }
 
+/// Relative Strength Index (Smooth version?)
+// https://www.omnicalculator.com/finance/rsi
+pub fn rsi_smooth(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
+    compute_rsi_vec(data, n, smooth_rs)
+}
+
+/// Relative Strength Index (TradingView version)
+/// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}rsi
+pub fn rsi(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
+    compute_rsi_vec(data, n, rma_rs)
+}
+
+fn std_dev(data: &Vec<f64>, n: usize) -> Vec<f64> {
+    data.windows(n)
+        .map(|xs| {
+            let mean = xs.iter().sum::<f64>() / n as f64;
+            (xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64).sqrt()
+        })
+        .collect()
+}
+
+/// return (sma, lower, upper)
+fn bb_utill(data: &Vec<f64>, n: usize, mult: f64) -> Vec<(f64, f64, f64)> {
+    let basis = sma(data, n);
+    let dev = std_dev(data, n);
+    basis
+        .iter()
+        .zip(dev.iter())
+        .map(|(sma, d)| (*sma, sma - mult * d, sma + mult * d))
+        .collect()
+}
+
+/// Bollinger Bands
+/// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}bb
+pub fn bb(data: &Vec<Ohlc>, n: usize, mult: f64) -> Vec<DTValue<(f64, f64, f64)>> {
+    let bb_res = bb_utill(&data.iter().map(|x| x.close).collect(), n, mult);
+
+    data.iter()
+        .skip(n)
+        .zip(bb_res.iter())
+        .map(|(ohlc, v)| DTValue {
+            time: ohlc.time,
+            value: *v,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use float_cmp::approx_eq;
 
     #[test]
-    fn test_rma() {
-        let src = vec![
-            100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0,
-        ];
+    fn test_sma() {
+        let src = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
         let length = 3;
-        let rma_values = rma(&src, length);
+        let sma_values = sma(&src, length);
 
-        let expected_rma = vec![
-            101.0, // Initial SMA
-            102.0, 103.0, 104.0, 105.0, 106.0,
+        let expected_sma = vec![
+            20.0, // (10 + 20 + 30) / 3
+            30.0, // (20 + 30 + 40) / 3
+            40.0, // (30 + 40 + 50) / 3
+            50.0, // (40 + 50 + 60) / 3
+            60.0, // (50 + 60 + 70) / 3
         ];
 
-        assert_eq!(rma_values.len(), expected_rma.len());
-        for (value, expected) in rma_values.iter().zip(expected_rma.iter()) {
+        assert_eq!(sma_values.len(), expected_sma.len());
+        for (value, expected) in sma_values.iter().zip(expected_sma.iter()) {
             assert!(
-                approx_eq!(f64, *value, *expected, epsilon = 1e6),
+                approx_eq!(f64, *value, *expected, epsilon = 1e-6),
                 "value: {}, expected: {}",
                 value,
                 expected

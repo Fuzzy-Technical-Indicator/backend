@@ -1,12 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-use crate::{rma, Ohlc};
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct RsiValue {
-    time: bson::DateTime,
-    value: f64,
-}
+use crate::{rma, Ohlc, RsiValue};
 
 fn compute_gainloss(data: &Vec<Ohlc>) -> (Vec<f64>, Vec<f64>) {
     let gainloss = data
@@ -33,7 +25,7 @@ fn smooth_fn(last_avg: f64, curr: f64, n: usize) -> f64 {
     (last_avg * (n - 1) as f64 + curr) / n as f64
 }
 
-fn smooth_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
+pub fn smooth_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
     // first n sessions gains and losses
     let mut avg_gain = vec![avg_first_n(gain, n)];
     let mut avg_loss = vec![avg_first_n(loss, n)];
@@ -49,7 +41,7 @@ fn smooth_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
         .collect()
 }
 
-fn rma_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
+pub fn rma_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
     rma(&gain, n)
         .iter()
         .zip(rma(&loss, n).iter())
@@ -57,7 +49,7 @@ fn rma_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
         .collect()
 }
 
-fn compute_rsi_vec(
+pub fn compute_rsi_vec(
     data: &Vec<Ohlc>,
     n: usize,
     rs_fn: fn(&Vec<f64>, &Vec<f64>, usize) -> Vec<f64>,
@@ -73,16 +65,6 @@ fn compute_rsi_vec(
             value: 100.0 - 100.0 / (1.0 + rs),
         })
         .collect()
-}
-
-// https://www.omnicalculator.com/finance/rsi
-pub fn rsi_smooth(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
-    compute_rsi_vec(data, n, smooth_rs)
-}
-
-/// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}rsi
-pub fn rsi(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
-    compute_rsi_vec(data, n, rma_rs)
 }
 
 #[cfg(test)]
