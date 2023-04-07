@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::Ohlc;
+use crate::{rma, Ohlc};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct RsiValue {
@@ -8,127 +8,86 @@ pub struct RsiValue {
     value: f64,
 }
 
-fn compute_rsi(avg_gain: f64, avg_loss: f64) -> f64 {
-    100f64 - 100f64 / (1f64 + (avg_gain / avg_loss))
-}
-
-fn compute_gainloss(data: &Vec<Ohlc>) -> Vec<(bool, f64)> {
-    data.iter()
+fn compute_gainloss(data: &Vec<Ohlc>) -> (Vec<f64>, Vec<f64>) {
+    let gainloss = data
+        .iter()
         .zip(data.iter().skip(1))
         .map(|(prev, curr)| {
             (
-                curr.close - prev.close > 0.0,
-                (curr.close - prev.close).abs(),
+                (curr.close - prev.close).max(0f64),
+                (prev.close - curr.close).max(0f64),
             )
         })
+        .collect::<Vec<(f64, f64)>>();
+    (
+        gainloss.iter().map(|(g, _)| *g).collect(),
+        gainloss.iter().map(|(_, l)| *l).collect(),
+    )
+}
+
+fn avg_first_n(data: &Vec<f64>, n: usize) -> f64 {
+    data.iter().take(n).sum::<f64>() / n as f64
+}
+
+fn smooth_fn(last_avg: f64, curr: f64, n: usize) -> f64 {
+    (last_avg * (n - 1) as f64 + curr) / n as f64
+}
+
+fn smooth_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
+    // first n sessions gains and losses
+    let mut avg_gain = vec![avg_first_n(gain, n)];
+    let mut avg_loss = vec![avg_first_n(loss, n)];
+
+    for (g, l) in gain.iter().skip(n).zip(loss.iter().skip(n)) {
+        avg_gain.push(smooth_fn(*avg_gain.last().unwrap(), *g, n));
+        avg_loss.push(smooth_fn(*avg_loss.last().unwrap(), *l, n));
+    }
+    avg_gain
+        .iter()
+        .zip(avg_loss.iter())
+        .map(|(g, l)| g / l)
         .collect()
 }
 
-fn smooth_avgs_gainloss(gain_loss: &Vec<(bool, f64)>, n: usize) -> (Vec<f64>, Vec<f64>) {
-    // first n sessions gains and losses
-    let mut avg_gain = vec![
-        gain_loss
-            .iter()
-            .take(n)
-            .filter(|(is_gain, _)| *is_gain)
-            .map(|(_, change)| change)
-            .sum::<f64>()
-            / n as f64,
-    ];
-
-    let mut avg_loss = vec![
-        gain_loss
-            .iter()
-            .take(n)
-            .filter(|(is_gain, _)| !is_gain)
-            .map(|(_, change)| change)
-            .sum::<f64>()
-            / n as f64,
-    ];
-
-    for (is_gain, v) in gain_loss.iter().skip(n) {
-        if *is_gain {
-            avg_gain.push((avg_gain.last().unwrap() * (n - 1) as f64 + v) / n as f64);
-            avg_loss.push((avg_loss.last().unwrap() * (n - 1) as f64 + 0.0) / n as f64);
-        } else {
-            avg_gain.push((avg_gain.last().unwrap() * (n - 1) as f64 + 0.0) / n as f64);
-            avg_loss.push((avg_loss.last().unwrap() * (n - 1) as f64 + v) / n as f64);
-        }
-    }
-
-    (avg_gain, avg_loss)
-}
-
-fn avgs_gainloss(gain_loss: &Vec<(bool, f64)>, n: usize) -> (Vec<f64>, Vec<f64>) {
-    let avg_gain = gain_loss
-        .windows(n)
-        .map(|xs| {
-            xs.iter()
-                .filter(|(is_gain, _)| *is_gain)
-                .map(|(_, change)| change)
-                .sum::<f64>()
-                / n as f64
-        })
-        .collect::<Vec<f64>>();
-
-    let avg_loss = gain_loss
-        .windows(n)
-        .map(|xs| {
-            xs.iter()
-                .filter(|(is_gain, _)| !is_gain)
-                .map(|(_, change)| change)
-                .sum::<f64>()
-                / n as f64
-        })
-        .collect::<Vec<f64>>();
-    (avg_gain, avg_loss)
+fn rma_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
+    rma(&gain, n)
+        .iter()
+        .zip(rma(&loss, n).iter())
+        .map(|(g, l)| g / l)
+        .collect()
 }
 
 fn compute_rsi_vec(
     data: &Vec<Ohlc>,
     n: usize,
-    gainloss_fn: fn(&Vec<(bool, f64)>, usize) -> (Vec<f64>, Vec<f64>),
+    rs_fn: fn(&Vec<f64>, &Vec<f64>, usize) -> Vec<f64>,
 ) -> Vec<RsiValue> {
-    let gain_loss = compute_gainloss(data);
-    let (avg_gain, avg_loss) = gainloss_fn(&gain_loss, n);
+    let (gain, loss) = compute_gainloss(data);
+    let rs_vec = rs_fn(&gain, &loss, n);
 
     data.iter()
         .skip(n)
-        .zip(avg_gain.iter().zip(avg_loss.iter()))
-        .map(|(curr, (avg_g, avg_l))| RsiValue {
+        .zip(rs_vec.iter())
+        .map(|(curr, rs)| RsiValue {
             time: curr.time,
-            value: compute_rsi(*avg_g, *avg_l),
+            value: 100.0 - 100.0 / (1.0 + rs),
         })
         .collect()
 }
 
 // https://www.omnicalculator.com/finance/rsi
-// using closing price
 pub fn rsi_smooth(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
-    compute_rsi_vec(data, n, smooth_avgs_gainloss)
+    compute_rsi_vec(data, n, smooth_rs)
 }
 
+/// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}rsi
 pub fn rsi(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
-    compute_rsi_vec(data, n, avgs_gainloss)
+    compute_rsi_vec(data, n, rma_rs)
 }
 
 #[cfg(test)]
 mod test {
-    use float_cmp::approx_eq;
-
     use super::*;
-
-    #[test]
-    fn test_compute_rsi() {
-        assert_eq!(compute_rsi(0.0, 1.0), 0.0);
-        assert_eq!(compute_rsi(1.0, 1.0), 50.0);
-        assert!(approx_eq!(
-            f64,
-            compute_rsi(1.34, 0.83),
-            61.78,
-            epsilon = 0.1
-        ));
-    }
 
     fn ohlc_with(close: f64) -> Ohlc {
         Ohlc {
@@ -168,10 +127,10 @@ mod test {
     fn test_rsi() {
         // manual test for now, need to write some automated test after
         let dt = test_set();
-        let gain_loss = compute_gainloss(&dt);
-        let (avg_gain, avg_loss) = smooth_avgs_gainloss(&gain_loss, 14);
-        println!("{:?}", gain_loss);
-        println!("{:?}", avg_gain);
-        println!("{:?}", avg_loss);
+        let (gain, loss) = compute_gainloss(&dt);
+        let rs = smooth_rs(&gain, &loss, 14);
+        println!("{:?}", gain);
+        println!("{:?}", loss);
+        println!("{:?}", rs);
     }
 }
