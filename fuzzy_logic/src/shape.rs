@@ -22,3 +22,7 @@ pub fn triangle(a: f64, b: f64, s: f64) -> F {
         0.0
     })
 }
+
+pub fn id() -> F {
+    Rc::new(|x| 0.0)
+}

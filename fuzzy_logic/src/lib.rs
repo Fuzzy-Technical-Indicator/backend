@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use linguistic::LinguisticVar;
 use set::FuzzySet;
+use shape::id;
 
 pub mod linguistic;
 pub mod plot;
@@ -142,15 +143,22 @@ impl FuzzyEngine {
         }
     }
 
-    pub fn inference(&self, inputs: Vec<Option<f64>>) -> Vec<Option<FuzzySet>> {
+    pub fn inference(&self, inputs: Vec<Option<f64>>) -> Option<Vec<FuzzySet>> {
         self.rules
             .iter()
             .map(|(cond, res)| {
                 let aj = compute_aj(&self.inputs_var, cond, &inputs).unwrap();
-                let out = min_sets(&self.outputs_var, res, aj);
-                union_sets(out)
+                min_sets(&self.outputs_var, res, aj)
             })
-            .collect::<Vec<Option<FuzzySet>>>()
+            .fold(None::<Vec<FuzzySet>>, |acc, x| match acc {
+                None => Some(x.clone()),
+                Some(a) => Some(
+                    a.iter()
+                        .zip(x.iter())
+                        .map(|(a, b)| a.std_union(b).unwrap())
+                        .collect(),
+                ),
+            })
     }
 }
 
@@ -169,16 +177,12 @@ fn compute_aj(
         .min_by(|a, b| a.partial_cmp(b).unwrap())
 }
 
-fn min_sets(
-    outputs_var: &Vec<LinguisticVar>,
-    res: &Vec<Option<String>>,
-    aj: f64,
-) -> Vec<Option<FuzzySet>> {
+fn min_sets(outputs_var: &Vec<LinguisticVar>, res: &Vec<Option<String>>, aj: f64) -> Vec<FuzzySet> {
     res.iter()
         .zip(outputs_var.iter())
         .map(|(term, var)| match term {
-            None => None,
-            Some(term) => Some(var.term(term).unwrap().min(aj)),
+            None => FuzzySet::new(var.universe, id()),
+            Some(term) => var.term(term).unwrap().min(aj),
         })
         .collect()
 }
@@ -285,13 +289,9 @@ mod tests {
         plot_linguistic(&f_engine.inputs_var[0], "temp", "images/t.svg").unwrap();
         plot_linguistic(&f_engine.inputs_var[1], "humidity", "images/h.svg").unwrap();
 
-        let result = f_engine.inference(vec![Some(19f64), Some(10f64)]);
-        match result[0] {
-            Some(ref x) => {
-                plot::plot_set(x, "signal", "images/r.svg").unwrap();
-                println!("{:?}", x.centroid_defuzz(0.01))
-            }
-            _ => println!("None"),
-        }
+        let result = f_engine.inference(vec![Some(19f64), Some(10f64)]).unwrap();
+
+        plot::plot_set(&result[0], "signal", "images/r.svg").unwrap();
+        println!("{:?}", result[0].centroid_defuzz(0.01))
     }
 }

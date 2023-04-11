@@ -5,8 +5,8 @@ use rocket::serde::json::Json;
 use rocket::{get, launch, routes, FromFormField};
 use rocket_cors::{AllowedOrigins, Cors, CorsOptions};
 use rocket_db_pools::{mongodb, Connection, Database};
-use tech_indicators::{bb, DTValue, Ohlc};
-use tech_indicators::{rsi, RsiValue};
+use tech_indicators::fuzzy::fuzzy_indicator;
+use tech_indicators::{bb, rsi, DTValue, Ohlc};
 
 // we need to specify the database url on Rocket.toml like this
 // [default.databases.marketdata]
@@ -109,7 +109,7 @@ async fn indicator_rsi(
     db: Connection<MarketData>,
     symbol: &str,
     interval: Option<Interval>,
-) -> Json<Vec<RsiValue>> {
+) -> Json<Vec<DTValue<f64>>> {
     let data = fetch_symbol(db, symbol, interval).await;
     Json(rsi(&data, 14))
 }
@@ -124,6 +124,21 @@ async fn indicator_bb(
     Json(bb(&data, 20, 2.0))
 }
 
+#[get("/fuzzy?<symbol>&<interval>")]
+async fn fuzzy_f(
+    db: Connection<MarketData>,
+    symbol: &str,
+    interval: Option<Interval>,
+) -> Json<Vec<DTValue<Vec<f64>>>> {
+    /// TODO: refactor this
+    let data = fetch_symbol(db, symbol, interval).await;
+    let rsi_v = rsi(&data, 20);
+    let bb_v = bb(&data, 20, 2.0);
+    let price = data.iter().map(|x| x.close).skip(20).collect();
+
+    Json(fuzzy_indicator(rsi_v, bb_v, price))
+}
+
 #[launch]
 fn rocket() -> _ {
     // Configure CORS options
@@ -133,5 +148,5 @@ fn rocket() -> _ {
     rocket::build()
         .attach(cors)
         .attach(MarketData::init())
-        .mount("/api", routes![ohlc, indicator_rsi, indicator_bb])
+        .mount("/api", routes![ohlc, indicator_rsi, indicator_bb, fuzzy_f])
 }

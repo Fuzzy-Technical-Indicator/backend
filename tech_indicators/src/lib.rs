@@ -1,3 +1,4 @@
+pub mod fuzzy;
 pub mod rsi_utills;
 
 use rsi_utills::{compute_rsi_vec, rma_rs, smooth_rs};
@@ -12,12 +13,6 @@ pub struct Ohlc {
     pub high: f64,
     pub low: f64,
     pub volume: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct RsiValue {
-    time: bson::DateTime,
-    value: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -51,13 +46,13 @@ pub fn rma(src: &Vec<f64>, n: usize) -> Vec<f64> {
 
 /// Relative Strength Index (Smooth version?)
 // https://www.omnicalculator.com/finance/rsi
-pub fn rsi_smooth(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
+pub fn rsi_smooth(data: &Vec<Ohlc>, n: usize) -> Vec<DTValue<f64>> {
     compute_rsi_vec(data, n, smooth_rs)
 }
 
 /// Relative Strength Index (TradingView version)
 /// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}rsi
-pub fn rsi(data: &Vec<Ohlc>, n: usize) -> Vec<RsiValue> {
+pub fn rsi(data: &Vec<Ohlc>, n: usize) -> Vec<DTValue<f64>> {
     compute_rsi_vec(data, n, rma_rs)
 }
 

@@ -1,4 +1,4 @@
-use crate::{rma, Ohlc, RsiValue};
+use crate::{rma, DTValue, Ohlc};
 
 fn compute_gainloss(data: &Vec<Ohlc>) -> (Vec<f64>, Vec<f64>) {
     let gainloss = data
@@ -53,14 +53,14 @@ pub fn compute_rsi_vec(
     data: &Vec<Ohlc>,
     n: usize,
     rs_fn: fn(&Vec<f64>, &Vec<f64>, usize) -> Vec<f64>,
-) -> Vec<RsiValue> {
+) -> Vec<DTValue<f64>> {
     let (gain, loss) = compute_gainloss(data);
     let rs_vec = rs_fn(&gain, &loss, n);
 
     data.iter()
         .skip(n)
         .zip(rs_vec.iter())
-        .map(|(curr, rs)| RsiValue {
+        .map(|(curr, rs)| DTValue {
             time: curr.time,
             value: 100.0 - 100.0 / (1.0 + rs),
         })
