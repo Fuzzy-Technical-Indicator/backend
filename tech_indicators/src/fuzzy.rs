@@ -21,6 +21,7 @@ pub fn fuzzy_indicator(
     bb: Vec<DTValue<(f64, f64, f64)>>,
     price: Vec<f64>,
 ) -> Vec<DTValue<Vec<f64>>> {
+    // TODO: Make this faster
     let f_engine = FuzzyEngine::new()
         .add_cond(LinguisticVar::new(
             vec![
@@ -104,7 +105,7 @@ pub fn fuzzy_indicator(
                 time: rsi_v.time,
                 value: res
                     .iter()
-                    .map(|x| x.centroid_defuzz(0.01))
+                    .map(|x| x.centroid_defuzz(0.1)) // the resolution of the centroid make so much impact on the performance
                     .collect::<Vec<f64>>(),
             }
         })
