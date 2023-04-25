@@ -1,4 +1,4 @@
-use crate::{rma, DTValue, Ohlc};
+use crate::{nan_iter, rma, DTValue, Ohlc};
 
 fn compute_gainloss(data: &Vec<Ohlc>) -> (Vec<f64>, Vec<f64>) {
     let gainloss = data
@@ -27,8 +27,12 @@ fn smooth_fn(last_avg: f64, curr: f64, n: usize) -> f64 {
 
 pub fn smooth_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
     // first n sessions gains and losses
-    let mut avg_gain = vec![avg_first_n(gain, n)];
-    let mut avg_loss = vec![avg_first_n(loss, n)];
+    let mut avg_gain = nan_iter(n - 1)
+        .chain(vec![avg_first_n(gain, n)])
+        .collect::<Vec<f64>>();
+    let mut avg_loss = nan_iter(n - 1)
+        .chain(vec![avg_first_n(loss, n)])
+        .collect::<Vec<f64>>();
 
     for (g, l) in gain.iter().skip(n).zip(loss.iter().skip(n)) {
         avg_gain.push(smooth_fn(*avg_gain.last().unwrap(), *g, n));

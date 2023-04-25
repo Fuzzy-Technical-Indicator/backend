@@ -21,10 +21,18 @@ pub struct DTValue<T> {
     value: T,
 }
 
+fn close_p(data: &Vec<Ohlc>) -> Vec<f64> {
+    data.iter().map(|x| x.close).collect()
+}
+
+fn nan_iter(n: usize) -> impl Iterator<Item = f64> {
+    std::iter::repeat(f64::NAN).take(n)
+}
+
 /// Exponential Weighted Moving Average
 /// https://corporatefinanceinstitute.com/resources/capital-markets/exponentially-weighted-moving-average-ewma/#:~:text=What%20is%20the%20Exponentially%20Weighted,technical%20analysis%20and%20volatility%20modeling.
 pub fn ewma(src: &Vec<f64>, alpha: f64, first: f64, n: usize) -> Vec<f64> {
-    let mut res = vec![first];
+    let mut res = nan_iter(n - 1).chain(vec![first]).collect::<Vec<f64>>();
 
     for v in src.iter().skip(n) {
         res.push(
@@ -37,8 +45,8 @@ pub fn ewma(src: &Vec<f64>, alpha: f64, first: f64, n: usize) -> Vec<f64> {
 /// Simple Moving Average
 /// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}sma
 pub fn sma(src: &Vec<f64>, n: usize) -> Vec<f64> {
-    src.windows(n)
-        .map(|xs| xs.iter().sum::<f64>() / n as f64)
+    nan_iter(n - 1)
+        .chain(src.windows(n).map(|xs| xs.iter().sum::<f64>() / n as f64))
         .collect()
 }
 
@@ -55,7 +63,9 @@ pub fn rma(src: &Vec<f64>, n: usize) -> Vec<f64> {
 /// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}ema
 pub fn ema(src: &Vec<f64>, n: usize) -> Vec<f64> {
     let alpha = 2f64 / (n as f64 + 1f64);
-    ewma(src, alpha, 0f64, n)
+    let first = src.iter().skip(n - 1).next().unwrap_or(&0f64);
+
+    ewma(src, alpha, *first, n)
 }
 
 /// Relative Strength Index (Smooth version?)
@@ -70,12 +80,12 @@ pub fn rsi(data: &Vec<Ohlc>, n: usize) -> Vec<DTValue<f64>> {
     compute_rsi_vec(data, n, rma_rs)
 }
 
-fn std_dev(data: &Vec<f64>, n: usize) -> Vec<f64> {
-    data.windows(n)
-        .map(|xs| {
+fn std_dev(src: &Vec<f64>, n: usize) -> Vec<f64> {
+    nan_iter(n - 1)
+        .chain(src.windows(n).map(|xs| {
             let mean = xs.iter().sum::<f64>() / n as f64;
             (xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64).sqrt()
-        })
+        }))
         .collect()
 }
 
@@ -93,24 +103,47 @@ fn bb_utill(data: &Vec<f64>, n: usize, mult: f64) -> Vec<(f64, f64, f64)> {
 /// Bollinger Bands
 /// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}bb
 pub fn bb(data: &Vec<Ohlc>, n: usize, mult: f64) -> Vec<DTValue<(f64, f64, f64)>> {
-    let bb_res = bb_utill(&data.iter().map(|x| x.close).collect(), n, mult);
+    let bb_res = bb_utill(&close_p(data), n, mult);
 
     data.iter()
-        .take(n)
-        .map(|ohlc| DTValue {
+        .zip(bb_res.iter())
+        .map(|(ohlc, v)| DTValue {
             time: ohlc.time,
-            value: (f64::NAN, f64::NAN, f64::NAN),
+            value: *v,
         })
-        .chain(
-            data.iter()
-                .skip(n)
-                .zip(bb_res.iter())
-                .map(|(ohlc, v)| DTValue {
-                    time: ohlc.time,
-                    value: *v,
-                }),
-        )
         .collect()
+}
+
+/// Moving Average Convergence/Divergence
+/// https://www.tradingview.com/support/solutions/43000502344-macd-moving-average-convergence-divergence/
+///
+/// currently hard coded
+pub fn macd(data: &Vec<Ohlc>) -> Vec<DTValue<(f64, f64, f64)>> {
+    let dt = close_p(data);
+
+    // shorter ema - longer ema
+    let macd_line = ema(&dt, 12)
+        .iter()
+        .zip(ema(&dt, 26).iter())
+        .map(|(a, b)| a - b)
+        .collect::<Vec<f64>>();
+
+    let signal_line = ema(&macd_line, 9);
+    let hist = macd_line
+        .iter()
+        .zip(signal_line.iter())
+        .map(|(a, b)| a - b)
+        .collect::<Vec<f64>>();
+
+    data.iter()
+        .zip(macd_line.iter())
+        .zip(signal_line.iter())
+        .zip(hist.iter())
+        .map(|(((ohlc, macd), signal), hist)| DTValue {
+            time: ohlc.time,
+            value: (*macd, *signal, *hist),
+        })
+        .collect::<Vec<DTValue<(f64, f64, f64)>>>()
 }
 
 #[cfg(test)]
@@ -125,6 +158,9 @@ mod test {
         let sma_values = sma(&src, length);
 
         let expected_sma = vec![
+            f64::NAN,
+            f64::NAN,
+            f64::NAN,
             20.0, // (10 + 20 + 30) / 3
             30.0, // (20 + 30 + 40) / 3
             40.0, // (30 + 40 + 50) / 3
