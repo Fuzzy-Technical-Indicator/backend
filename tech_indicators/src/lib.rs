@@ -21,6 +21,19 @@ pub struct DTValue<T> {
     value: T,
 }
 
+/// Exponential Weighted Moving Average
+/// https://corporatefinanceinstitute.com/resources/capital-markets/exponentially-weighted-moving-average-ewma/#:~:text=What%20is%20the%20Exponentially%20Weighted,technical%20analysis%20and%20volatility%20modeling.
+pub fn ewma(src: &Vec<f64>, alpha: f64, first: f64, n: usize) -> Vec<f64> {
+    let mut res = vec![first];
+
+    for v in src.iter().skip(n) {
+        res.push(
+            alpha * v + (1f64 - alpha) * res.last().expect("res should be impossible to be empty"),
+        )
+    }
+    res
+}
+
 /// Simple Moving Average
 /// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}sma
 pub fn sma(src: &Vec<f64>, n: usize) -> Vec<f64> {
@@ -34,14 +47,15 @@ pub fn sma(src: &Vec<f64>, n: usize) -> Vec<f64> {
 pub fn rma(src: &Vec<f64>, n: usize) -> Vec<f64> {
     let alpha = 1f64 / n as f64;
     let sma = src.iter().take(n).sum::<f64>() / n as f64;
-    let mut rma = vec![sma];
 
-    for v in src.iter().skip(n) {
-        rma.push(
-            alpha * v + (1f64 - alpha) * rma.last().expect("rma should be impossible to be empty"),
-        );
-    }
-    rma
+    ewma(src, alpha, sma, n)
+}
+
+/// Exponential Moving Average
+/// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}ema
+pub fn ema(src: &Vec<f64>, n: usize) -> Vec<f64> {
+    let alpha = 2f64 / (n as f64 + 1f64);
+    ewma(src, alpha, 0f64, n)
 }
 
 /// Relative Strength Index (Smooth version?)
@@ -82,12 +96,20 @@ pub fn bb(data: &Vec<Ohlc>, n: usize, mult: f64) -> Vec<DTValue<(f64, f64, f64)>
     let bb_res = bb_utill(&data.iter().map(|x| x.close).collect(), n, mult);
 
     data.iter()
-        .skip(n)
-        .zip(bb_res.iter())
-        .map(|(ohlc, v)| DTValue {
+        .take(n)
+        .map(|ohlc| DTValue {
             time: ohlc.time,
-            value: *v,
+            value: (f64::NAN, f64::NAN, f64::NAN),
         })
+        .chain(
+            data.iter()
+                .skip(n)
+                .zip(bb_res.iter())
+                .map(|(ohlc, v)| DTValue {
+                    time: ohlc.time,
+                    value: *v,
+                }),
+        )
         .collect()
 }
 

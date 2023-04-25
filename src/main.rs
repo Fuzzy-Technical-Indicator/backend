@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, Document};
 use mongodb::Collection;
@@ -130,13 +132,22 @@ async fn fuzzy_f(
     symbol: &str,
     interval: Option<Interval>,
 ) -> Json<Vec<DTValue<Vec<f64>>>> {
-    /// TODO: refactor this
+    // TODO: refactor this
     let data = fetch_symbol(db, symbol, interval).await;
-    let rsi_v = rsi(&data, 20);
-    let bb_v = bb(&data, 20, 2.0);
-    let price = data.iter().map(|x| x.close).skip(20).collect();
 
-    Json(fuzzy_indicator(rsi_v, bb_v, price))
+    let rsi_v = measure_time(|| rsi(&data, 14), "rsi");
+    let bb_v = measure_time(|| bb(&data, 20, 2.0), "bb");
+    let price = measure_time(|| data.iter().map(|x| x.close).collect(), "price");
+    let result = measure_time(|| fuzzy_indicator(rsi_v, bb_v, price), "fuzzy");
+    let json = measure_time(|| Json(result), "json");
+    json
+}
+
+fn measure_time<T, F: FnOnce() -> T>(f: F, msg: &str) -> T {
+    let now = Instant::now();
+    let result = f();
+    println!("{}, time elapsed: {}ms", msg,now.elapsed().as_millis());
+    result
 }
 
 #[launch]

@@ -58,12 +58,20 @@ pub fn compute_rsi_vec(
     let rs_vec = rs_fn(&gain, &loss, n);
 
     data.iter()
-        .skip(n)
-        .zip(rs_vec.iter())
-        .map(|(curr, rs)| DTValue {
+        .take(n)
+        .map(|curr| DTValue {
             time: curr.time,
-            value: 100.0 - 100.0 / (1.0 + rs),
+            value: f64::NAN,
         })
+        .chain(
+            data.iter()
+                .skip(n)
+                .zip(rs_vec.iter())
+                .map(|(curr, rs)| DTValue {
+                    time: curr.time,
+                    value: 100.0 - 100.0 / (1.0 + rs),
+                }),
+        )
         .collect()
 }
 
