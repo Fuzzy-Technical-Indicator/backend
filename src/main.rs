@@ -8,7 +8,7 @@ use rocket::{get, launch, routes, FromFormField};
 use rocket_cors::{AllowedOrigins, Cors, CorsOptions};
 use rocket_db_pools::{mongodb, Connection, Database};
 use tech_indicators::fuzzy::fuzzy_indicator;
-use tech_indicators::{bb, rsi, DTValue, Ohlc};
+use tech_indicators::{bb, macd, rsi, DTValue, Ohlc};
 
 // we need to specify the database url on Rocket.toml like this
 // [default.databases.marketdata]
@@ -126,6 +126,16 @@ async fn indicator_bb(
     Json(bb(&data, 20, 2.0))
 }
 
+#[get("/indicator/macd?<symbol>&<interval>")]
+async fn indicator_macd(
+    db: Connection<MarketData>,
+    symbol: &str,
+    interval: Option<Interval>,
+) -> Json<Vec<DTValue<(f64, f64, f64)>>> {
+    let data = fetch_symbol(db, symbol, interval).await;
+    Json(macd(&data))
+}
+
 #[get("/fuzzy?<symbol>&<interval>")]
 async fn fuzzy_f(
     db: Connection<MarketData>,
@@ -146,7 +156,7 @@ async fn fuzzy_f(
 fn measure_time<T, F: FnOnce() -> T>(f: F, msg: &str) -> T {
     let now = Instant::now();
     let result = f();
-    println!("{}, time elapsed: {}ms", msg,now.elapsed().as_millis());
+    println!("{}, time elapsed: {}ms", msg, now.elapsed().as_millis());
     result
 }
 
@@ -159,5 +169,8 @@ fn rocket() -> _ {
     rocket::build()
         .attach(cors)
         .attach(MarketData::init())
-        .mount("/api", routes![ohlc, indicator_rsi, indicator_bb, fuzzy_f])
+        .mount(
+            "/api",
+            routes![ohlc, indicator_rsi, indicator_bb, indicator_macd, fuzzy_f],
+        )
 }

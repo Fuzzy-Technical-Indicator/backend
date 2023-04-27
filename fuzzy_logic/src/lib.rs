@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use linguistic::LinguisticVar;
 use set::FuzzySet;
-use shape::id;
+use shape::zero;
 
 pub mod linguistic;
 pub mod plot;
@@ -151,7 +151,7 @@ impl FuzzyEngine {
                 min_sets(&self.outputs_var, res, aj)
             })
             .fold(None::<Vec<FuzzySet>>, |acc, x| match acc {
-                None => Some(x.clone()),
+                None => Some(x),
                 Some(a) => Some(
                     a.iter()
                         .zip(x.iter())
@@ -181,7 +181,7 @@ fn min_sets(outputs_var: &Vec<LinguisticVar>, res: &Vec<Option<String>>, aj: f64
     res.iter()
         .zip(outputs_var.iter())
         .map(|(term, var)| match term {
-            None => FuzzySet::new(var.universe, id()),
+            None => FuzzySet::new(var.universe, zero()),
             Some(term) => var.term(term).unwrap().min(aj),
         })
         .collect()

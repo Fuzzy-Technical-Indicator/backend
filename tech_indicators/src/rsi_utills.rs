@@ -1,6 +1,6 @@
 use crate::{nan_iter, rma, DTValue, Ohlc};
 
-fn compute_gainloss(data: &Vec<Ohlc>) -> (Vec<f64>, Vec<f64>) {
+fn compute_gainloss(data: &[Ohlc]) -> (Vec<f64>, Vec<f64>) {
     let gainloss = data
         .iter()
         .zip(data.iter().skip(1))
@@ -17,7 +17,7 @@ fn compute_gainloss(data: &Vec<Ohlc>) -> (Vec<f64>, Vec<f64>) {
     )
 }
 
-fn avg_first_n(data: &Vec<f64>, n: usize) -> f64 {
+fn avg_first_n(data: &[f64], n: usize) -> f64 {
     data.iter().take(n).sum::<f64>() / n as f64
 }
 
@@ -25,7 +25,7 @@ fn smooth_fn(last_avg: f64, curr: f64, n: usize) -> f64 {
     (last_avg * (n - 1) as f64 + curr) / n as f64
 }
 
-pub fn smooth_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
+pub fn smooth_rs(gain: &[f64], loss: &[f64], n: usize) -> Vec<f64> {
     // first n sessions gains and losses
     let mut avg_gain = nan_iter(n - 1)
         .chain(vec![avg_first_n(gain, n)])
@@ -45,18 +45,18 @@ pub fn smooth_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
         .collect()
 }
 
-pub fn rma_rs(gain: &Vec<f64>, loss: &Vec<f64>, n: usize) -> Vec<f64> {
-    rma(&gain, n)
+pub fn rma_rs(gain: &[f64], loss: &[f64], n: usize) -> Vec<f64> {
+    rma(gain, n)
         .iter()
-        .zip(rma(&loss, n).iter())
+        .zip(rma(loss, n).iter())
         .map(|(g, l)| g / l)
         .collect()
 }
 
 pub fn compute_rsi_vec(
-    data: &Vec<Ohlc>,
+    data: &[Ohlc],
     n: usize,
-    rs_fn: fn(&Vec<f64>, &Vec<f64>, usize) -> Vec<f64>,
+    rs_fn: fn(&[f64], &[f64], usize) -> Vec<f64>,
 ) -> Vec<DTValue<f64>> {
     let (gain, loss) = compute_gainloss(data);
     let rs_vec = rs_fn(&gain, &loss, n);
