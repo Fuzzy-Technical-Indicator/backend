@@ -8,7 +8,7 @@ use rocket::{get, launch, routes, FromFormField};
 use rocket_cors::{AllowedOrigins, Cors, CorsOptions};
 use rocket_db_pools::{mongodb, Connection, Database};
 use tech_indicators::fuzzy::fuzzy_indicator;
-use tech_indicators::{bb, macd, rsi, DTValue, Ohlc};
+use tech_indicators::{bb, macd, rsi, adx, DTValue, Ohlc};
 
 // we need to specify the database url on Rocket.toml like this
 // [default.databases.marketdata]
@@ -36,12 +36,11 @@ fn aggrdoc_to_ohlc(docs: Vec<Document>) -> Vec<Ohlc> {
                 .get_str("ticker")
                 .unwrap()
                 .to_string(),
-            time: x
+            time: *x
                 .get_document("_id")
                 .unwrap()
                 .get_datetime("time")
-                .unwrap()
-                .clone(),
+                .unwrap(),
             open: x.get_f64("open").unwrap(),
             close: x.get_f64("close").unwrap(),
             high: x.get_f64("high").unwrap(),
@@ -92,7 +91,7 @@ async fn fetch_symbol(
     symbol: &str,
     interval: Option<Interval>,
 ) -> Vec<Ohlc> {
-    let db_client = (&*db).database("StockMarket");
+    let db_client = (*db).database("StockMarket");
     let collection = db_client.collection::<Ohlc>(symbol);
     aggr_fetch(&collection, interval).await
 }
@@ -136,6 +135,16 @@ async fn indicator_macd(
     Json(macd(&data))
 }
 
+#[get("/indicator/adx?<symbol>&<interval>")]
+async fn indicator_adx(
+    db: Connection<MarketData>,
+    symbol: &str,
+    interval: Option<Interval>,
+) -> Json<Vec<DTValue<f64>>> {
+    let data = fetch_symbol(db, symbol, interval).await;
+    Json(adx(&data, 14))
+}
+
 #[get("/fuzzy?<symbol>&<interval>")]
 async fn fuzzy_f(
     db: Connection<MarketData>,
@@ -149,8 +158,7 @@ async fn fuzzy_f(
     let bb_v = measure_time(|| bb(&data, 20, 2.0), "bb");
     let price = measure_time(|| data.iter().map(|x| x.close).collect(), "price");
     let result = measure_time(|| fuzzy_indicator(rsi_v, bb_v, price), "fuzzy");
-    let json = measure_time(|| Json(result), "json");
-    json
+    measure_time(|| Json(result), "json")
 }
 
 fn measure_time<T, F: FnOnce() -> T>(f: F, msg: &str) -> T {
@@ -171,6 +179,6 @@ fn rocket() -> _ {
         .attach(MarketData::init())
         .mount(
             "/api",
-            routes![ohlc, indicator_rsi, indicator_bb, indicator_macd, fuzzy_f],
+            routes![ohlc, indicator_rsi, indicator_bb, indicator_macd, indicator_adx, fuzzy_f],
         )
 }

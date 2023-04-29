@@ -1,6 +1,8 @@
+mod adx_utills;
 pub mod fuzzy;
-pub mod rsi_utills;
+mod rsi_utills;
 
+use adx_utills::calc_adx;
 use rsi_utills::{compute_rsi_vec, rma_rs, smooth_rs};
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +29,23 @@ fn close_p(data: &[Ohlc]) -> Vec<f64> {
 
 fn nan_iter(n: usize) -> impl Iterator<Item = f64> {
     std::iter::repeat(f64::NAN).take(n)
+}
+
+fn none_iter<T: Copy>(n: usize) -> impl Iterator<Item = Option<T>> {
+    std::iter::repeat(None).take(n)
+}
+
+/// Embed datetiume from [Ohlc] to Iterator of T, and we need to ensure that the data and ohlc order are matched.
+///
+/// Note that this also consume the data iterator.
+fn embed_datetime<T, I: IntoIterator<Item = T>>(data: I, ohlc: &[Ohlc]) -> Vec<DTValue<T>> {
+    ohlc.iter()
+        .zip(data.into_iter())
+        .map(|(x, v)| DTValue {
+            time: x.time,
+            value: v,
+        })
+        .collect()
 }
 
 /// Exponential Weighted Moving Average
@@ -63,9 +82,9 @@ pub fn rma(src: &[f64], n: usize) -> Vec<f64> {
 /// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}ema
 pub fn ema(src: &[f64], n: usize) -> Vec<f64> {
     let alpha = 2f64 / (n as f64 + 1f64);
-    let first = src.get(n - 1).unwrap_or(&0f64);
+    let sma = src.iter().take(n).sum::<f64>() / n as f64;
 
-    ewma(src, alpha, *first, n)
+    ewma(src, alpha, sma, n)
 }
 
 /// Relative Strength Index (Smooth version?)
@@ -104,31 +123,23 @@ fn bb_utill(data: &[f64], n: usize, mult: f64) -> Vec<(f64, f64, f64)> {
 /// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}bb
 pub fn bb(data: &[Ohlc], n: usize, mult: f64) -> Vec<DTValue<(f64, f64, f64)>> {
     let bb_res = bb_utill(&close_p(data), n, mult);
-
-    data.iter()
-        .zip(bb_res.iter())
-        .map(|(ohlc, v)| DTValue {
-            time: ohlc.time,
-            value: *v,
-        })
-        .collect()
+    embed_datetime(bb_res, data)
 }
 
-/// Moving Average Convergence/Divergence
-/// https://www.tradingview.com/support/solutions/43000502344-macd-moving-average-convergence-divergence/
-///
-/// currently hard coded
-pub fn macd(data: &[Ohlc]) -> Vec<DTValue<(f64, f64, f64)>> {
-    let dt = close_p(data);
+fn calc_macd_line(src: &[f64], short: usize, long: usize) -> Vec<f64> {
+    if short > long {
+        panic!("short should be less than long");
+    }
 
-    // shorter ema - longer ema
-    let macd_line = ema(&dt, 12)
+    ema(src, short)
         .iter()
-        .zip(ema(&dt, 26).iter())
+        .zip(ema(src, long).iter())
         .map(|(a, b)| a - b)
-        .collect::<Vec<f64>>();
+        .collect::<Vec<f64>>()
+}
 
-    let signal_line = macd_line
+fn calc_signal_line(macd_line: &[f64], n: usize) -> Vec<f64> {
+    macd_line
         .iter()
         .take_while(|x| x.is_nan())
         .copied()
@@ -138,9 +149,21 @@ pub fn macd(data: &[Ohlc]) -> Vec<DTValue<(f64, f64, f64)>> {
                 .skip_while(|x| x.is_nan())
                 .copied()
                 .collect::<Vec<f64>>(),
-            9,
+            n,
         ))
-        .collect::<Vec<f64>>();
+        .collect()
+}
+
+/// Moving Average Convergence/Divergence
+/// https://www.tradingview.com/support/solutions/43000502344-macd-moving-average-convergence-divergence/
+///
+/// Currently every parameters is hard-coded, and we are using sma instead of ema
+pub fn macd(data: &[Ohlc]) -> Vec<DTValue<(f64, f64, f64)>> {
+    let dt = close_p(data);
+
+    // shorter ema - longer ema
+    let macd_line = calc_macd_line(&dt, 12, 26);
+    let signal_line = calc_signal_line(&macd_line, 9);
 
     let hist = macd_line
         .iter()
@@ -148,49 +171,17 @@ pub fn macd(data: &[Ohlc]) -> Vec<DTValue<(f64, f64, f64)>> {
         .map(|(a, b)| a - b)
         .collect::<Vec<f64>>();
 
-    data.iter()
-        .zip(macd_line.iter())
+    let zipped = macd_line
+        .iter()
         .zip(signal_line.iter())
         .zip(hist.iter())
-        .map(|(((ohlc, macd), signal), hist)| DTValue {
-            time: ohlc.time,
-            value: (*macd, *signal, *hist),
-        })
-        .collect::<Vec<DTValue<(f64, f64, f64)>>>()
+        .map(|((a, b), c)| (*a, *b, *c));
+
+    embed_datetime(zipped, data)
 }
 
 pub fn adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
-    let dt_h = data.iter().map(|x| x.high).collect::<Vec<f64>>();
-    let dt_l = data.iter().map(|x| x.low).collect::<Vec<f64>>();
-    let dt_c = data.iter().map(|x| x.close);
-
-    let tr = dt_h
-        .iter()
-        .zip(dt_l.iter())
-        .zip(dt_c.skip(1))
-        .map(|((h1, l1), c0)| (h1 - l1).max(h1 - c0).max(c0 - l1));
-
-    // (dm_plus, dm_minus)
-    let dm = dt_h
-        .iter()
-        .zip(dt_l.iter())
-        .zip(dt_h.iter().skip(1).zip(dt_l.iter().skip(1)))
-        .map(|((h0, l0), (h1, l1))| {
-            if (h1 - h0) > (l0 - l1) {
-                return (h1 - h0, 0f64);
-            }
-            (0f64, l0 - l1)
-        });
-
-    let di = dm.zip(tr).map(|((dm_p, dm_m), tr)| (dm_p / tr, dm_m / tr));
-    let adx = di.map(|(di_p, di_m)| ((di_p - di_m) / (di_p + di_m)));
-
-    adx.zip(data.iter())
-        .map(|(x, ohlc)| DTValue {
-            time: ohlc.time,
-            value: x,
-        })
-        .collect()
+    calc_adx(data, n)
 }
 
 #[cfg(test)]
@@ -200,11 +191,17 @@ mod test {
 
     #[test]
     fn test_ema() {
-        let src = vec![f64::NAN, f64::NAN, 10.0, 20.0, 30.0];
+        let src = vec![1.0, 2.0, 3.0];
         let length = 2;
         let ema_values = ema(&src, length);
+        assert_eq!(ema_values.len(), src.len());
 
-        println!("{:?}", ema_values);
+        for (value, expected) in ema_values
+            .iter()
+            .zip(vec![f64::NAN, 3.0 / 2.0, 2.0 / 3.0 * 3.0 + 1.0 / 3.0 * 3.0 / 2.0].iter())
+        {
+            assert!(approx_eq!(f64, *value, *expected, ulps = 2));
+        }
     }
 
     #[test]

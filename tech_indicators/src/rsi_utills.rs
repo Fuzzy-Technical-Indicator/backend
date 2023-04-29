@@ -1,4 +1,4 @@
-use crate::{nan_iter, rma, DTValue, Ohlc};
+use crate::{embed_datetime, nan_iter, rma, DTValue, Ohlc};
 
 fn compute_gainloss(data: &[Ohlc]) -> (Vec<f64>, Vec<f64>) {
     let gainloss = data
@@ -60,23 +60,9 @@ pub fn compute_rsi_vec(
 ) -> Vec<DTValue<f64>> {
     let (gain, loss) = compute_gainloss(data);
     let rs_vec = rs_fn(&gain, &loss, n);
+    let rsi = rs_vec.iter().map(|rs| 100.0 - 100.0 / (1.0 + rs));
 
-    data.iter()
-        .take(n)
-        .map(|curr| DTValue {
-            time: curr.time,
-            value: f64::NAN,
-        })
-        .chain(
-            data.iter()
-                .skip(n)
-                .zip(rs_vec.iter())
-                .map(|(curr, rs)| DTValue {
-                    time: curr.time,
-                    value: 100.0 - 100.0 / (1.0 + rs),
-                }),
-        )
-        .collect()
+    embed_datetime(rsi, data)
 }
 
 #[cfg(test)]
