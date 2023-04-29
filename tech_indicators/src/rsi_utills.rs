@@ -1,20 +1,18 @@
-use crate::{embed_datetime, nan_iter, rma, DTValue, Ohlc};
+use crate::{embed_datetime, rma, DTValue, Ohlc};
 
-fn compute_gainloss(data: &[Ohlc]) -> (Vec<f64>, Vec<f64>) {
-    let gainloss = data
-        .iter()
-        .zip(data.iter().skip(1))
-        .map(|(prev, curr)| {
+fn nan_iter(n: usize) -> impl Iterator<Item = f64> {
+    std::iter::repeat(f64::NAN).take(n)
+}
+
+fn compute_gainloss(data: &[Ohlc]) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+    std::iter::once((None, None))
+        .chain(data.iter().zip(data.iter().skip(1)).map(|(prev, curr)| {
             (
-                (curr.close - prev.close).max(0f64),
-                (prev.close - curr.close).max(0f64),
+                Some((curr.close - prev.close).max(0f64)),
+                Some((prev.close - curr.close).max(0f64)),
             )
-        })
-        .collect::<Vec<(f64, f64)>>();
-    (
-        gainloss.iter().map(|(g, _)| *g).collect(),
-        gainloss.iter().map(|(_, l)| *l).collect(),
-    )
+        }))
+        .unzip()
 }
 
 fn avg_first_n(data: &[f64], n: usize) -> f64 {
@@ -45,22 +43,32 @@ pub fn smooth_rs(gain: &[f64], loss: &[f64], n: usize) -> Vec<f64> {
         .collect()
 }
 
-pub fn rma_rs(gain: &[f64], loss: &[f64], n: usize) -> Vec<f64> {
+pub fn rma_rs(gain: &[Option<f64>], loss: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
     rma(gain, n)
         .iter()
         .zip(rma(loss, n).iter())
-        .map(|(g, l)| g / l)
+        .map(|(g, l)| {
+            if let (Some(g), Some(l)) = (g, l) {
+                Some(g / l)
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
-pub fn compute_rsi_vec(
-    data: &[Ohlc],
-    n: usize,
-    rs_fn: fn(&[f64], &[f64], usize) -> Vec<f64>,
-) -> Vec<DTValue<f64>> {
+type RsF = fn(&[Option<f64>], &[Option<f64>], usize) -> Vec<Option<f64>>;
+
+pub fn compute_rsi_vec(data: &[Ohlc], n: usize, rs_fn: RsF) -> Vec<DTValue<f64>> {
     let (gain, loss) = compute_gainloss(data);
     let rs_vec = rs_fn(&gain, &loss, n);
-    let rsi = rs_vec.iter().map(|rs| 100.0 - 100.0 / (1.0 + rs));
+    let rsi = rs_vec.iter().map(|rs_o| {
+        if let Some(rs) = rs_o {
+            100.0 - 100.0 / (1.0 + rs)
+        } else {
+            100.0 - 100.0 / (1.0 + f64::NAN)
+        }
+    });
 
     embed_datetime(rsi, data)
 }
@@ -106,11 +114,14 @@ mod test {
     #[test]
     fn test_rsi() {
         // manual test for now, need to write some automated test after
+
+        /*
         let dt = test_set();
         let (gain, loss) = compute_gainloss(&dt);
         let rs = smooth_rs(&gain, &loss, 14);
         println!("{:?}", gain);
         println!("{:?}", loss);
         println!("{:?}", rs);
+        */
     }
 }

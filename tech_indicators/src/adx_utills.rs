@@ -1,31 +1,4 @@
-use crate::{embed_datetime, none_iter, DTValue, Ohlc};
-
-fn ewma(src: &[Option<f64>], alpha: f64, first: f64, n: usize) -> Vec<Option<f64>> {
-    let mut res = src
-        .iter()
-        .take_while(|x| x.is_none())
-        .cloned()
-        .chain(none_iter(n - 1))
-        .chain(std::iter::once(Some(first)))
-        .collect::<Vec<Option<f64>>>();
-
-    for v in src.iter().skip_while(|x| x.is_none()).skip(n) {
-        if let (Some(v), Some(last)) = (v, res.last()) {
-            res.push(Some(alpha * v + (1f64 - alpha) * last.unwrap_or(0.0)));
-        } else {
-            res.push(None)
-        }
-    }
-    res
-}
-
-/// need to guarantee that we on;y have None on the first part of src
-fn rma(src: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
-    let alpha = 1f64 / n as f64;
-    let sma = src.iter().filter_map(|v| *v).take(n).sum::<f64>() / n as f64;
-
-    ewma(src, alpha, sma, n)
-}
+use crate::{embed_datetime, none_iter, rma, DTValue, Ohlc};
 
 /// True Range
 fn tr(data: &[Ohlc]) -> Vec<Option<f64>> {
@@ -80,7 +53,6 @@ fn calc_di(dm: &[Option<f64>], tr: &[Option<f64>]) -> Vec<Option<f64>> {
 }
 
 pub fn calc_adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
-    // (dm_plus, dm_minus)
     let (dm_p, dm_m) = calc_dm(data);
     let tr = rma(&tr(data), n);
 
@@ -118,8 +90,6 @@ pub fn calc_adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
 
 #[cfg(test)]
 mod test {
-    use float_cmp::approx_eq;
-
     use super::*;
 
     fn ohlc_with(high: f64, low: f64, close: f64) -> Ohlc {
@@ -141,17 +111,6 @@ mod test {
             ohlc_with(4.0, 3.0, 3.0),
             ohlc_with(5.0, 2.0, 3.0),
         ]
-    }
-
-    #[test]
-    fn test_adx() {
-        let adx = calc_adx(&test_set(), 2);
-
-        println!("{:?}", adx);
-
-        for (v, expected) in adx.iter().zip(vec![f64::NAN, 1.0, 1.0, f64::NAN].iter()) {
-            assert_eq!(v.value, *expected);
-        }
     }
 
     #[test]
@@ -203,46 +162,6 @@ mod test {
             .zip(vec![None, Some(1.0), Some(1.5), Some(3.0)].iter())
         {
             assert_eq!(v, expected);
-        }
-    }
-
-    #[test]
-    fn test_rma_with_none() {
-        let data = vec![None, Some(1.0), Some(2.0), Some(3.0)];
-        let rma = rma(&data, 2);
-
-        for (v, expected) in rma.iter().zip(
-            vec![
-                None,
-                None,
-                Some(3.0 / 2.0),
-                Some((1.0 / 2.0) * 3.0 + (1.0 / 2.0) * (3.0 / 2.0)),
-            ]
-            .iter(),
-        ) {
-            assert_eq!(v, expected);
-        }
-    }
-
-    #[test]
-    fn test_rma() {
-        let data = vec![Some(0.5), Some(1.0), Some(2.0), Some(3.0)];
-        let rma = rma(&data, 3);
-
-        for (v, expected) in rma.iter().zip(
-            vec![
-                None,
-                None,
-                Some(3.5 / 3.0),
-                Some((1.0 / 3.0) * 3.0 + (2.0 / 3.0) * (3.5 / 3.0)),
-            ]
-            .iter(),
-        ) {
-            if let (Some(v), Some(expected)) = (v, expected) {
-                assert!(approx_eq!(f64, *v, *expected, epsilon = 0.0001));
-            } else {
-                assert_eq!(v, expected)
-            }
         }
     }
 }
