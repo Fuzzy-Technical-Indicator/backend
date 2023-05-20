@@ -3,6 +3,7 @@ pub mod fuzzy;
 mod rsi_utills;
 
 use adx_utills::calc_adx;
+use itertools::izip;
 use rsi_utills::{compute_rsi_vec, rma_rs};
 use serde::{Deserialize, Serialize};
 
@@ -82,7 +83,7 @@ fn windows_compute(
         .collect::<Vec<Option<f64>>>();
 
     none_iter(src.len() - skipped_src.len() + n - 1)
-        .chain(skipped_src.windows(n).map(|xs| f(xs)))
+        .chain(skipped_src.windows(n).map(f))
         .collect()
 }
 
@@ -173,14 +174,33 @@ pub fn bb(data: &[Ohlc], n: usize, mult: f64) -> Vec<DTValue<(f64, f64, f64)>> {
     embed_datetime(bb_res, data)
 }
 
-fn calc_macd_line(src: &[Option<f64>], short: usize, long: usize) -> Vec<Option<f64>> {
+fn calc_macd_line(
+    src: &[Option<f64>],
+    short: usize,
+    long: usize,
+    f: impl Fn(&[Option<f64>], usize) -> Vec<Option<f64>>,
+) -> Vec<Option<f64>> {
     if short > long {
         panic!("short should be less than long");
     }
 
-    ema(src, short)
+    f(src, short)
         .iter()
-        .zip(ema(src, long).iter())
+        .zip(f(src, long).iter())
+        .map(|(a, b)| {
+            if let (Some(a), Some(b)) = (a, b) {
+                Some(a - b)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// xs - ys
+fn vec_diff(xs: &[Option<f64>], ys: &[Option<f64>]) -> Vec<Option<f64>> {
+    xs.iter()
+        .zip(ys.iter())
         .map(|(a, b)| {
             if let (Some(a), Some(b)) = (a, b) {
                 Some(a - b)
@@ -199,20 +219,9 @@ pub fn macd(data: &[Ohlc]) -> Vec<DTValue<(f64, f64, f64)>> {
     let dt = to_option_vec(&close_p(data));
 
     // shorter ema - longer ema
-    let macd_line = calc_macd_line(&dt, 12, 26);
+    let macd_line = calc_macd_line(&dt, 12, 26, ema);
     let signal_line = ema(&macd_line, 9);
-
-    let hist = macd_line
-        .iter()
-        .zip(signal_line.iter())
-        .map(|(a, b)| {
-            if let (Some(a), Some(b)) = (a, b) {
-                Some(a - b)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<Option<f64>>>();
+    let hist = vec_diff(&macd_line, &signal_line);
 
     let zipped = macd_line
         .iter()
@@ -227,6 +236,65 @@ pub fn macd(data: &[Ohlc]) -> Vec<DTValue<(f64, f64, f64)>> {
         });
 
     embed_datetime(zipped, data)
+}
+
+fn get_q(d0: f64, d1: f64) -> f64 {
+    if d1 > 0.0 && d0 <= 0.0 {
+        75.0 // long
+    } else if d1 < 0.0 && d0 >= 0.0 {
+        25.0 // short
+    } else {
+        50.0 // neutral
+    }
+}
+
+fn strength_term<
+    'a,
+    I1: IntoIterator<Item = &'a Option<f64>>,
+    I2: IntoIterator<Item = &'a Option<f64>>,
+>(
+    a: I1,
+    b: I2,
+    mult: f64,
+) -> Vec<Option<f64>> {
+    let mut max_d = f64::NAN;
+    a.into_iter()
+        .zip(b.into_iter())
+        .map(|(x0, x1)| {
+            if let (Some(x0), Some(x1)) = (x0, x1) {
+                let d = x1 - x0;
+                max_d = max_d.max(d);
+                return Some(mult * d / max_d);
+            }
+            None
+        })
+        .collect()
+}
+
+/// From Naranjo paper
+pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
+    let dt = to_option_vec(&close_p(data));
+
+    let short_sma = sma(&dt, 12);
+    let long_sma = sma(&dt, 26);
+    let macd_line = vec_diff(&short_sma, &long_sma);
+    let signal_line = ema(&macd_line, 9);
+    let divergence = vec_diff(&macd_line, &signal_line);
+
+    let open = to_option_vec(&data.iter().map(|x| x.open).collect::<Vec<f64>>());
+    let o = strength_term(&open, open.iter().skip(1), 3.0);
+    let div = strength_term(&divergence, divergence.iter().skip(1), 3.0);
+    let sma_d = strength_term(&short_sma, &long_sma, 10.0);
+
+    let res = izip!(divergence.windows(2), o, div, sma_d).map(|(dv, x, y, z)| {
+        if let (Some(d0), Some(d1), Some(x), Some(y), Some(z)) = (dv[0], dv[1], x, y, z) {
+            let q = get_q(d0, d1);
+            return q - x - y - z;
+        }
+        f64::NAN
+    });
+
+    embed_datetime(res, data)
 }
 
 pub fn adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {

@@ -9,6 +9,7 @@ edition = "2021"
 bson = "2.6.1"
 serde = { version = "1.0.152", features = ["derive"] }
 fuzzy_logic = { path = "../fuzzy_logic" }
+itertools = "0.10.5"
 
 [dev-dependencies]
 float-cmp = "0.9.0"
