@@ -1,8 +1,9 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::F;
+
 pub fn trapezoidal(a: f64, b: f64, c: f64, d: f64, e: f64) -> F {
-    Rc::new(move |x| {
+    Arc::new(move |x| {
         if x >= a && x < b {
             return ((x - a) * e) / (b - a);
         } else if x >= b && x <= c {
@@ -15,7 +16,7 @@ pub fn trapezoidal(a: f64, b: f64, c: f64, d: f64, e: f64) -> F {
 }
 
 pub fn triangle(a: f64, b: f64, s: f64) -> F {
-    Rc::new(move |x| {
+    Arc::new(move |x| {
         if (a - s) <= x && x <= (a + s) {
             return b * (1.0 - (x - a).abs() / s);
         }
@@ -24,5 +25,5 @@ pub fn triangle(a: f64, b: f64, s: f64) -> F {
 }
 
 pub fn zero() -> F {
-    Rc::new(|_| 0.0)
+    Arc::new(|_| 0.0)
 }

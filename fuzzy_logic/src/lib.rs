@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use linguistic::LinguisticVar;
 use set::FuzzySet;
@@ -9,7 +9,7 @@ pub mod plot;
 pub mod set;
 pub mod shape;
 
-type F = Rc<dyn Fn(f64) -> f64>;
+type F = Arc<dyn Fn(f64) -> f64 + Send + Sync>;
 
 pub fn arange(start: f64, stop: f64, interval: f64) -> Vec<f64> {
     if stop < start {

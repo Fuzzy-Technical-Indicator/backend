@@ -1,22 +1,23 @@
-use std::rc::Rc;
+use rayon::prelude::*;
+use std::sync::Arc;
 
 use crate::{arange, F};
 
 fn minf(mf: &F, input: f64) -> F {
-    let f = Rc::clone(mf);
-    Rc::new(move |x: f64| -> f64 { input.min((f)(x)) })
+    let f = Arc::clone(mf);
+    Arc::new(move |x: f64| -> f64 { input.min((f)(x)) })
 }
 
 fn std_unionf(mf1: &F, mf2: &F) -> F {
-    let f1 = Rc::clone(mf1);
-    let f2 = Rc::clone(mf2);
-    Rc::new(move |x: f64| -> f64 { (f1)(x).max((f2)(x)) })
+    let f1 = Arc::clone(mf1);
+    let f2 = Arc::clone(mf2);
+    Arc::new(move |x: f64| -> f64 { (f1)(x).max((f2)(x)) })
 }
 
 fn std_intersectf(mf1: &F, mf2: &F) -> F {
-    let f1 = Rc::clone(mf1);
-    let f2 = Rc::clone(mf2);
-    Rc::new(move |x: f64| -> f64 { (f1)(x).min((f2)(x)) })
+    let f1 = Arc::clone(mf1);
+    let f2 = Arc::clone(mf2);
+    Arc::new(move |x: f64| -> f64 { (f1)(x).min((f2)(x)) })
 }
 
 #[derive(Clone)]
@@ -32,7 +33,7 @@ impl FuzzySet {
         }
 
         FuzzySet {
-            universe: universe,
+            universe,
             membership_f: fuzzy_f,
         }
     }
@@ -81,12 +82,11 @@ impl FuzzySet {
 
     pub fn centroid_defuzz(&self, resolution: f64) -> f64 {
         let universe = self.get_finite_universe(resolution);
-        let (mf_sum, mf_weighted_sum) = universe.iter().fold((0.0, 0.0), |(s0, s1), x| {
-            (
-                s0 + (self.membership_f)(*x),
-                s1 + (self.membership_f)(*x) * x,
-            )
-        });
+        let (mf_sum, mf_weighted_sum) = universe
+            .par_iter()
+            .map(|x| ((self.membership_f)(*x), (self.membership_f)(*x) * x))
+            .reduce(|| (0.0, 0.0), |acc, v| (acc.0 + v.0, acc.1 + v.1));
+
         if mf_sum == 0.0 {
             return 0.0;
         }
