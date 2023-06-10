@@ -6,6 +6,7 @@ use adx_utills::calc_adx;
 use itertools::izip;
 use rsi_utills::{compute_rsi_vec, rma_rs};
 use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Ohlc {
@@ -25,11 +26,15 @@ pub struct DTValue<T> {
 }
 
 fn close_p(data: &[Ohlc]) -> Vec<f64> {
-    data.iter().map(|x| x.close).collect()
+    data.par_iter().map(|x| x.close).collect()
 }
 
 fn none_iter<T: Copy>(n: usize) -> impl Iterator<Item = Option<T>> {
     std::iter::repeat(None).take(n)
+}
+
+fn none_par_iter<T: Send + Sync + Clone>(n: usize) -> rayon::iter::RepeatN<Option<T>> {
+    rayon::iter::repeat(None::<T>).take(n)
 }
 
 pub fn to_option_vec<T: Copy>(src: &[T]) -> Vec<Option<T>> {
@@ -39,12 +44,14 @@ pub fn to_option_vec<T: Copy>(src: &[T]) -> Vec<Option<T>> {
 /// Embed datetiume from [Ohlc] to Iterator of T, and we need to ensure that the data and ohlc order are matched.
 ///
 /// Note that this also consume the data iterator.
-fn embed_datetime<T, I: IntoIterator<Item = T>>(data: I, ohlc: &[Ohlc]) -> Vec<DTValue<T>> {
-    ohlc.iter()
-        .zip(data.into_iter())
+fn embed_datetime<T>(data: &[T], ohlc: &[Ohlc]) -> Vec<DTValue<T>>
+where T: Send + Sync + Copy 
+{
+    ohlc.par_iter()
+        .zip(data.par_iter())
         .map(|(x, v)| DTValue {
             time: x.time,
-            value: v,
+            value: *v,
         })
         .collect()
 }
@@ -74,7 +81,7 @@ fn ewma(src: &[Option<f64>], alpha: f64, first: f64, n: usize) -> Vec<Option<f64
 fn windows_compute(
     src: &[Option<f64>],
     n: usize,
-    f: impl Fn(&[Option<f64>]) -> Option<f64>,
+    f: impl Fn(&[Option<f64>]) -> Option<f64> + Send + Sync,
 ) -> Vec<Option<f64>> {
     let skipped_src = src
         .iter()
@@ -82,8 +89,8 @@ fn windows_compute(
         .copied()
         .collect::<Vec<Option<f64>>>();
 
-    none_iter(src.len() - skipped_src.len() + n - 1)
-        .chain(skipped_src.windows(n).map(f))
+    none_par_iter(src.len() - skipped_src.len() + n - 1)
+        .chain(skipped_src.par_windows(n).map(f))
         .collect()
 }
 
@@ -155,8 +162,8 @@ fn bb_utill(src: &[f64], n: usize, mult: f64) -> Vec<(f64, f64, f64)> {
     let basis = sma(&dt, n);
     let dev = std_dev(&dt, n);
     basis
-        .iter()
-        .zip(dev.iter())
+        .par_iter()
+        .zip(dev.par_iter())
         .map(|(sma, d)| {
             if let (Some(sma), Some(d)) = (sma, d) {
                 (*sma, sma - mult * d, sma + mult * d)
@@ -171,7 +178,7 @@ fn bb_utill(src: &[f64], n: usize, mult: f64) -> Vec<(f64, f64, f64)> {
 /// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}bb
 pub fn bb(data: &[Ohlc], n: usize, mult: f64) -> Vec<DTValue<(f64, f64, f64)>> {
     let bb_res = bb_utill(&close_p(data), n, mult);
-    embed_datetime(bb_res, data)
+    embed_datetime(&bb_res, data)
 }
 
 fn calc_macd_line(
@@ -185,8 +192,8 @@ fn calc_macd_line(
     }
 
     f(src, short)
-        .iter()
-        .zip(f(src, long).iter())
+        .par_iter()
+        .zip(f(src, long).par_iter())
         .map(|(a, b)| {
             if let (Some(a), Some(b)) = (a, b) {
                 Some(a - b)
@@ -199,8 +206,8 @@ fn calc_macd_line(
 
 /// xs - ys
 fn vec_diff(xs: &[Option<f64>], ys: &[Option<f64>]) -> Vec<Option<f64>> {
-    xs.iter()
-        .zip(ys.iter())
+    xs.par_iter()
+        .zip(ys.par_iter())
         .map(|(a, b)| {
             if let (Some(a), Some(b)) = (a, b) {
                 Some(a - b)
@@ -224,18 +231,19 @@ pub fn macd(data: &[Ohlc]) -> Vec<DTValue<(f64, f64, f64)>> {
     let hist = vec_diff(&macd_line, &signal_line);
 
     let zipped = macd_line
-        .iter()
-        .zip(signal_line.iter())
-        .zip(hist.iter())
+        .par_iter()
+        .zip(signal_line.par_iter())
+        .zip(hist.par_iter())
         .map(|((a, b), c)| {
             (
                 a.unwrap_or(f64::NAN),
                 b.unwrap_or(f64::NAN),
                 c.unwrap_or(f64::NAN),
             )
-        });
+        })
+        .collect::<Vec<(f64, f64, f64)>>();
 
-    embed_datetime(zipped, data)
+    embed_datetime(&zipped, data)
 }
 
 fn get_q(d0: f64, d1: f64) -> f64 {
@@ -292,9 +300,10 @@ pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
             return q - x - y - z;
         }
         f64::NAN
-    });
+    })
+    .collect::<Vec<f64>>();
 
-    embed_datetime(res, data)
+    embed_datetime(&res, data)
 }
 
 pub fn adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {

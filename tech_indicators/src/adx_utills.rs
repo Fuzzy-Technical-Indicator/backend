@@ -1,4 +1,5 @@
-use crate::{embed_datetime, none_iter, rma, DTValue, Ohlc};
+use crate::{embed_datetime, none_iter, rma, DTValue, Ohlc, none_par_iter};
+use rayon::prelude::*;
 
 /// True Range
 fn tr(data: &[Ohlc]) -> Vec<Option<f64>> {
@@ -15,17 +16,18 @@ fn tr(data: &[Ohlc]) -> Vec<Option<f64>> {
 
 /// f is a function in that takes (t0, t1) and do something
 fn change(data: &[Ohlc], f: fn((&Ohlc, &Ohlc)) -> Option<f64>) -> Vec<Option<f64>> {
-    none_iter(1)
-        .chain(data.iter().zip(data.iter().skip(1)).map(f))
+    none_par_iter(1)
+        .chain(data.par_iter().zip(data.par_iter().skip(1)).map(f))
         .collect()
 }
 
+/// Directional Movement
 fn calc_dm(data: &[Ohlc]) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
     let up = change(data, |(t0, t1)| Some(t1.high - t0.high));
     let down = change(data, |(t0, t1)| Some(t0.low - t1.low));
 
-    up.iter()
-        .zip(down.iter())
+    up.par_iter()
+        .zip(down.par_iter())
         .map(|(u, d)| {
             if let (Some(u), Some(d)) = (u, d) {
                 return (
@@ -40,8 +42,8 @@ fn calc_dm(data: &[Ohlc]) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
 
 /// Directional Index
 fn calc_di(dm: &[Option<f64>], tr: &[Option<f64>]) -> Vec<Option<f64>> {
-    dm.iter()
-        .zip(tr.iter())
+    dm.par_iter()
+        .zip(tr.par_iter())
         .map(|(dm_p, tr)| {
             if let (Some(dm_p), Some(tr)) = (dm_p, tr) {
                 Some(100.0 * dm_p / tr)
@@ -59,7 +61,7 @@ pub fn calc_adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
     let plus = calc_di(&rma(&dm_p, n), &tr);
     let minus = calc_di(&rma(&dm_m, n), &tr);
 
-    let sum = plus.iter().zip(minus.iter()).map(|(p, m)| {
+    let sum = plus.par_iter().zip(minus.par_iter()).map(|(p, m)| {
         if let (Some(p), Some(m)) = (p, m) {
             Some(p + m)
         } else {
@@ -68,8 +70,8 @@ pub fn calc_adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
     });
 
     let adx = plus
-        .iter()
-        .zip(minus.iter())
+        .par_iter()
+        .zip(minus.par_iter())
         .zip(sum)
         .map(|((p, m), s)| {
             if let (Some(p), Some(m), Some(s)) = (p, m, s) {
@@ -81,11 +83,11 @@ pub fn calc_adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
         .collect::<Vec<Option<f64>>>();
 
     let smooth_adx = rma(&adx, n)
-        .iter()
+        .par_iter()
         .map(|x| if let Some(v) = x { 100.0 * v } else { f64::NAN })
         .collect::<Vec<f64>>();
 
-    embed_datetime(smooth_adx, data)
+    embed_datetime(&smooth_adx, data)
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ use fuzzy_logic::{
     shape::{trapezoidal, triangle},
     FuzzyEngine,
 };
+use rayon::prelude::*;
 
 use crate::DTValue;
 
@@ -94,9 +95,9 @@ pub fn fuzzy_indicator(
             vec![Some("weak"), Some("weak")],
         );
 
-    rsi.iter()
-        .zip(bb.iter())
-        .zip(price.iter())
+    rsi.par_iter()
+        .zip(bb.par_iter())
+        .zip(price.par_iter())
         .map(|((rsi_v, bb_v), p)| {
             let res = f_engine
                 .inference(vec![Some(rsi_v.value), Some(bb_percent(*p, bb_v.value))])
