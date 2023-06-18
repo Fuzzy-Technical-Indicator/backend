@@ -17,6 +17,7 @@ dotenvy = "0.15.6"
 chrono = "0.4.23"
 futures = "0.3"
 rocket_cors = { git = "https://github.com/lawliet89/rocket_cors", branch = "master" }
+cached = "0.44.0"
 
 [dependencies.rocket_db_pools]
 version = "0.1.0-rc.2"

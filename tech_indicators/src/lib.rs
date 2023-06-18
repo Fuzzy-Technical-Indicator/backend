@@ -19,7 +19,7 @@ pub struct Ohlc {
     pub volume: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Hash)]
 pub struct DTValue<T> {
     time: bson::DateTime,
     value: T,

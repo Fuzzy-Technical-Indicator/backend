@@ -1,3 +1,5 @@
+pub mod core;
+
 use std::time::Instant;
 
 use futures::stream::TryStreamExt;
@@ -7,8 +9,8 @@ use rocket::serde::json::Json;
 use rocket::{get, launch, routes, FromFormField};
 use rocket_cors::{AllowedOrigins, Cors, CorsOptions};
 use rocket_db_pools::{mongodb, Connection, Database};
-use tech_indicators::fuzzy::fuzzy_indicator;
 use tech_indicators::{adx, bb, macd, my_macd, rsi, DTValue, Ohlc};
+use crate::core::{fuzzy_f, cachable_dt};
 
 // we need to specify the database url on Rocket.toml like this
 // [default.databases.marketdata]
@@ -17,8 +19,8 @@ use tech_indicators::{adx, bb, macd, my_macd, rsi, DTValue, Ohlc};
 #[database("marketdata")]
 struct MarketData(mongodb::Client);
 
-#[derive(Debug, PartialEq, FromFormField)]
-enum Interval {
+#[derive(Debug, PartialEq, FromFormField, Clone, Hash, Eq)]
+pub enum Interval {
     #[field(value = "1h")]
     OneHour,
     #[field(value = "4h")]
@@ -152,26 +154,17 @@ async fn indicator_mymacd(
 }
 
 #[get("/fuzzy?<symbol>&<interval>")]
-async fn fuzzy_f(
+async fn fuzzy_route(
     db: Connection<MarketData>,
     symbol: &str,
     interval: Option<Interval>,
 ) -> Json<Vec<DTValue<Vec<f64>>>> {
-    // TODO: refactor this
-    let data = fetch_symbol(db, symbol, interval).await;
-
-    let rsi_v = measure_time(|| rsi(&data, 14), "rsi");
-    let bb_v = measure_time(|| bb(&data, 20, 2.0), "bb");
-    let price = measure_time(|| data.iter().map(|x| x.close).collect(), "price");
-    let result = measure_time(|| fuzzy_indicator(rsi_v, bb_v, price), "fuzzy");
-    measure_time(|| Json(result), "json")
-}
-
-fn measure_time<T, F: FnOnce() -> T>(f: F, msg: &str) -> T {
     let now = Instant::now();
-    let result = f();
-    println!("{}, time elapsed: {}ms", msg, now.elapsed().as_millis());
-    result
+    let data = fetch_symbol(db, symbol, interval.clone()).await;
+
+    println!("{}, time elapsed: {}ms", "fetch_symbol", now.elapsed().as_millis());
+
+    fuzzy_f(&data, symbol, interval, cachable_dt())
 }
 
 #[launch]
@@ -192,7 +185,7 @@ fn rocket() -> _ {
                 indicator_macd,
                 indicator_adx,
                 indicator_mymacd,
-                fuzzy_f
+                fuzzy_route
             ],
         )
 }
