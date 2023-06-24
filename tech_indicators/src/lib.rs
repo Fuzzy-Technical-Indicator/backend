@@ -4,11 +4,11 @@ mod rsi_utills;
 
 use adx_utills::calc_adx;
 use itertools::izip;
+use rayon::prelude::*;
 use rsi_utills::{compute_rsi_vec, rma_rs};
 use serde::{Deserialize, Serialize};
-use rayon::prelude::*;
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct Ohlc {
     pub ticker: String,
     pub time: bson::DateTime,
@@ -45,7 +45,8 @@ pub fn to_option_vec<T: Copy>(src: &[T]) -> Vec<Option<T>> {
 ///
 /// Note that this also consume the data iterator.
 fn embed_datetime<T>(data: &[T], ohlc: &[Ohlc]) -> Vec<DTValue<T>>
-where T: Send + Sync + Copy 
+where
+    T: Send + Sync + Copy,
 {
     ohlc.par_iter()
         .zip(data.par_iter())
@@ -294,14 +295,15 @@ pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
     let div = strength_term(&divergence, divergence.iter().skip(1), 3.0);
     let sma_d = strength_term(&short_sma, &long_sma, 10.0);
 
-    let res = izip!(divergence.windows(2), o, div, sma_d).map(|(dv, x, y, z)| {
-        if let (Some(d0), Some(d1), Some(x), Some(y), Some(z)) = (dv[0], dv[1], x, y, z) {
-            let q = get_q(d0, d1);
-            return q - x - y - z;
-        }
-        f64::NAN
-    })
-    .collect::<Vec<f64>>();
+    let res = izip!(divergence.windows(2), o, div, sma_d)
+        .map(|(dv, x, y, z)| {
+            if let (Some(d0), Some(d1), Some(x), Some(y), Some(z)) = (dv[0], dv[1], x, y, z) {
+                let q = get_q(d0, d1);
+                return q - x - y - z;
+            }
+            f64::NAN
+        })
+        .collect::<Vec<f64>>();
 
     embed_datetime(&res, data)
 }
