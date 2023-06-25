@@ -1,18 +1,17 @@
+use actix_web::web;
 use cached::proc_macro::cached;
 use chrono::{Timelike, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::{
     bson::{doc, Document},
-    Collection,
+    Client, Collection,
 };
-use rocket::serde::json::Json;
-use rocket_db_pools::{mongodb, Connection};
 use std::time::Instant;
 use tech_indicators::{adx, bb, fuzzy::fuzzy_indicator, macd, my_macd, rsi, DTValue, Ohlc};
 
-use crate::{Interval, MarketData};
+use crate::Interval;
 
-const DEBUG: bool = true;
+const DEBUG: bool = false;
 
 pub fn measure_time<T, F: FnOnce() -> T>(f: F, msg: &str) -> T {
     let now = Instant::now();
@@ -87,7 +86,7 @@ async fn aggr_fetch(collection: &Collection<Ohlc>, interval: &Option<Interval>) 
     convert = r#"{ format!("{}{:?}{:?}", symbol, interval, cachable_dt()) }"#
 )]
 pub async fn fetch_symbol(
-    db: Connection<MarketData>,
+    db: web::Data<Client>,
     symbol: &str,
     interval: &Option<Interval>,
 ) -> Vec<Ohlc> {
@@ -97,10 +96,12 @@ pub async fn fetch_symbol(
     let collection = db_client.collection::<Ohlc>(symbol);
     let result = aggr_fetch(&collection, interval).await;
 
-    println!(
-        "fetch_symbol, time elapsed: {}ms",
-        now.elapsed().as_millis()
-    );
+    if DEBUG {
+        println!(
+            "fetch_symbol, time elapsed: {}ms",
+            now.elapsed().as_millis()
+        );
+    }
 
     result
 }
@@ -112,33 +113,28 @@ pub async fn fetch_symbol(
 pub fn fuzzy_cached(
     data: &[Ohlc],
     _symbol: &str,
-    _interval: Option<Interval>,
-) -> Json<Vec<DTValue<Vec<f64>>>> {
+    _interval: &Option<Interval>,
+) -> Vec<DTValue<Vec<f64>>> {
     if DEBUG {
         let rsi_v = measure_time(|| rsi(data, 14), "rsi");
         let bb_v = measure_time(|| bb(data, 20, 2.0), "bb");
         let price = measure_time(|| data.iter().map(|x| x.close).collect(), "price");
         let result = measure_time(|| fuzzy_indicator(rsi_v, bb_v, price), "fuzzy");
-        return measure_time(|| Json(result), "json");
+        return measure_time(|| result, "_");
     }
 
     let rsi_v = rsi(data, 14);
     let bb_v = bb(data, 20, 2.0);
     let price = data.iter().map(|x| x.close).collect();
-    let result = fuzzy_indicator(rsi_v, bb_v, price);
-    Json(result)
+    fuzzy_indicator(rsi_v, bb_v, price)
 }
 
 #[cached(
     key = "String",
     convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
 )]
-pub fn rsi_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: Option<Interval>,
-) -> Json<Vec<DTValue<f64>>> {
-    Json(rsi(data, 14))
+pub fn rsi_cached(data: &[Ohlc], _symbol: &str, _interval: &Option<Interval>) -> Vec<DTValue<f64>> {
+    rsi(data, 14)
 }
 
 #[cached(
@@ -148,9 +144,9 @@ pub fn rsi_cached(
 pub fn bb_cached(
     data: &[Ohlc],
     _symbol: &str,
-    _interval: Option<Interval>,
-) -> Json<Vec<DTValue<(f64, f64, f64)>>> {
-    Json(bb(data, 20, 2.0))
+    _interval: &Option<Interval>,
+) -> Vec<DTValue<(f64, f64, f64)>> {
+    bb(data, 20, 2.0)
 }
 
 #[cached(
@@ -160,21 +156,17 @@ pub fn bb_cached(
 pub fn macd_cached(
     data: &[Ohlc],
     _symbol: &str,
-    _interval: Option<Interval>,
-) -> Json<Vec<DTValue<(f64, f64, f64)>>> {
-    Json(macd(data))
+    _interval: &Option<Interval>,
+) -> Vec<DTValue<(f64, f64, f64)>> {
+    macd(data)
 }
 
 #[cached(
     key = "String",
     convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
 )]
-pub fn adx_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: Option<Interval>,
-) -> Json<Vec<DTValue<f64>>> {
-    Json(adx(data, 14))
+pub fn adx_cached(data: &[Ohlc], _symbol: &str, _interval: &Option<Interval>) -> Vec<DTValue<f64>> {
+    adx(data, 14)
 }
 
 #[cached(
@@ -184,7 +176,7 @@ pub fn adx_cached(
 pub fn mymacd_cached(
     data: &[Ohlc],
     _symbol: &str,
-    _interval: Option<Interval>,
-) -> Json<Vec<DTValue<f64>>> {
-    Json(my_macd(data))
+    _interval: &Option<Interval>,
+) -> Vec<DTValue<f64>> {
+    my_macd(data)
 }
