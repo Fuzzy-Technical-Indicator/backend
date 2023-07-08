@@ -3,6 +3,7 @@ pub mod core;
 use crate::core::{
     adx_cached, bb_cached, fetch_symbol, fuzzy_cached, macd_cached, mymacd_cached, rsi_cached,
 };
+use actix_cors::Cors;
 use actix_web::{get, middleware::Logger, web, App, HttpServer, Responder};
 use env_logger::Env;
 use mongodb::Client;
@@ -99,11 +100,15 @@ async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(Env::default().default_filter_or("info"));
 
     HttpServer::new(move || {
+        let cors = Cors::default().allow_any_origin();
+
         App::new()
             .wrap(Logger::new("%r %s %bbytes %Dms"))
+            .wrap(cors)
             .app_data(web::Data::new(client.clone()))
             .service(
                 web::scope("/api")
+                    .service(ohlc)
                     .service(fuzzy_route)
                     .service(indicator_macd)
                     .service(indicator_bb)
