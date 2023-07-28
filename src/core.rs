@@ -6,12 +6,24 @@ use mongodb::{
     bson::{doc, Document},
     Client, Collection,
 };
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tech_indicators::{adx, bb, fuzzy::fuzzy_indicator, macd, my_macd, obv, rsi, DTValue, Ohlc};
 
 use crate::Interval;
 
 const DEBUG: bool = false;
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+pub struct UserOhlc {
+    pub ticker: String,
+    pub time: i64,
+    pub open: f64,
+    pub close: f64,
+    pub high: f64,
+    pub low: f64,
+    pub volume: u64,
+}
 
 pub fn measure_time<T, F: FnOnce() -> T>(f: F, msg: &str) -> T {
     let now = Instant::now();
@@ -104,6 +116,30 @@ pub async fn fetch_symbol(
     }
 
     result
+}
+
+#[cached(
+    key = "String",
+    convert = r#"{ format!("{}{:?}{:?}", symbol, interval, cachable_dt()) }"#
+)]
+pub async fn fetch_user_ohlc(
+    db: web::Data<Client>,
+    symbol: &str,
+    interval: &Option<Interval>,
+) -> Vec<UserOhlc> {
+    let fetch_result = fetch_symbol(db, symbol, interval).await;
+    fetch_result
+        .iter()
+        .map(|x| UserOhlc {
+            ticker: x.ticker.clone(),
+            time: x.time.timestamp_millis(),
+            high: x.high,
+            low: x.low,
+            open: x.open,
+            close: x.close,
+            volume: x.volume,
+        })
+        .collect()
 }
 
 #[cached(

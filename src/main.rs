@@ -1,8 +1,8 @@
 pub mod core;
 
 use crate::core::{
-    adx_cached, bb_cached, fetch_symbol, fuzzy_cached, macd_cached, mymacd_cached, obv_cached,
-    rsi_cached,
+    adx_cached, bb_cached, fetch_symbol, fetch_user_ohlc, fuzzy_cached, macd_cached, mymacd_cached,
+    obv_cached, rsi_cached,
 };
 use actix_cors::Cors;
 use actix_web::{get, middleware::Logger, web, App, HttpServer, Responder};
@@ -30,7 +30,7 @@ struct QueryParams {
 async fn ohlc(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-    web::Json(fetch_symbol(db, symbol, interval).await)
+    web::Json(fetch_user_ohlc(db, symbol, interval).await)
 }
 
 #[get("/indicator/rsi")]

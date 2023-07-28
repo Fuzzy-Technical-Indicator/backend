@@ -23,7 +23,7 @@ pub struct Ohlc {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Hash)]
 pub struct DTValue<T> {
-    time: bson::DateTime,
+    time: i64,
     value: T,
 }
 
@@ -48,8 +48,6 @@ pub fn to_option_vec<T: Copy>(src: &[T]) -> Vec<Option<T>> {
 }
 
 /// Embed datetiume from [Ohlc] to Iterator of T, and we need to ensure that the data and ohlc order are matched.
-///
-/// Note that this also consume the data iterator.
 fn embed_datetime<T>(data: &[T], ohlc: &[Ohlc]) -> Vec<DTValue<T>>
 where
     T: Send + Sync + Copy,
@@ -57,7 +55,7 @@ where
     ohlc.par_iter()
         .zip(data.par_iter())
         .map(|(x, v)| DTValue {
-            time: x.time,
+            time: x.time.timestamp_millis(),
             value: *v,
         })
         .collect()
