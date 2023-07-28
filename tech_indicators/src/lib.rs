@@ -1,6 +1,8 @@
 mod adx_utills;
 pub mod fuzzy;
+mod math;
 mod rsi_utills;
+mod ta;
 
 use adx_utills::calc_adx;
 use itertools::izip;
@@ -23,6 +25,10 @@ pub struct Ohlc {
 pub struct DTValue<T> {
     time: bson::DateTime,
     value: T,
+}
+
+fn volume(data: &[Ohlc]) -> Vec<Option<u64>> {
+    data.par_iter().map(|x| Some(x.volume)).collect()
 }
 
 fn close_p(data: &[Ohlc]) -> Vec<f64> {
@@ -310,6 +316,22 @@ pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
 
 pub fn adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
     calc_adx(data, n)
+}
+
+/// On Balance Volume
+pub fn obv(data: &[Ohlc]) -> Vec<DTValue<f64>> {
+    let close = to_option_vec(&close_p(data));
+    let signs = &math::sign(&ta::change(&close, 1));
+    let values = ta::cum(&math::mult_u64(&signs, &volume(data)));
+    let result = values
+        .par_iter()
+        .map(|v| match v {
+            Some(v) => *v,
+            None => f64::NAN,
+        })
+        .collect::<Vec<f64>>();
+
+    embed_datetime(&result, data)
 }
 
 #[cfg(test)]

@@ -1,7 +1,8 @@
 pub mod core;
 
 use crate::core::{
-    adx_cached, bb_cached, fetch_symbol, fuzzy_cached, macd_cached, mymacd_cached, rsi_cached,
+    adx_cached, bb_cached, fetch_symbol, fuzzy_cached, macd_cached, mymacd_cached, obv_cached,
+    rsi_cached,
 };
 use actix_cors::Cors;
 use actix_web::{get, middleware::Logger, web, App, HttpServer, Responder};
@@ -68,6 +69,15 @@ async fn indicator_adx(db: web::Data<Client>, params: web::Query<QueryParams>) -
     web::Json(adx_cached(&data, symbol, interval))
 }
 
+#[get("/indicator/obv")]
+async fn indicator_obv(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
+    let symbol = &params.symbol;
+    let interval = &params.interval;
+
+    let data = fetch_symbol(db, symbol, interval).await;
+    web::Json(obv_cached(&data, symbol, interval))
+}
+
 #[get("/indicator/mymacd")]
 async fn indicator_mymacd(
     db: web::Data<Client>,
@@ -114,7 +124,8 @@ async fn main() -> std::io::Result<()> {
                     .service(indicator_bb)
                     .service(indicator_adx)
                     .service(indicator_rsi)
-                    .service(indicator_mymacd),
+                    .service(indicator_mymacd)
+                    .service(indicator_obv),
             )
     })
     .bind(("127.0.0.1", 8000))?

@@ -7,7 +7,7 @@ use mongodb::{
     Client, Collection,
 };
 use std::time::Instant;
-use tech_indicators::{adx, bb, fuzzy::fuzzy_indicator, macd, my_macd, rsi, DTValue, Ohlc};
+use tech_indicators::{adx, bb, fuzzy::fuzzy_indicator, macd, my_macd, obv, rsi, DTValue, Ohlc};
 
 use crate::Interval;
 
@@ -179,4 +179,12 @@ pub fn mymacd_cached(
     _interval: &Option<Interval>,
 ) -> Vec<DTValue<f64>> {
     my_macd(data)
+}
+
+#[cached(
+    key = "String",
+    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+)]
+pub fn obv_cached(data: &[Ohlc], _symbol: &str, _interval: &Option<Interval>) -> Vec<DTValue<f64>> {
+    obv(data)
 }
