@@ -3,7 +3,7 @@ use rayon::prelude::*;
 
 /// Compares the current `source` value to it's value `length` bars ago and return the difference
 pub fn change(src: &[Option<f64>], length: usize) -> Vec<Option<f64>> {
-    none_par_iter(1)
+    none_par_iter(length)
         .chain(
             src.par_iter()
                 .zip(src.par_iter().skip(length))

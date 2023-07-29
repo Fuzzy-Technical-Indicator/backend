@@ -1,13 +1,12 @@
 mod adx_utills;
 pub mod fuzzy;
-mod math;
-mod rsi_utills;
-mod ta;
+pub mod math;
+pub mod ta;
+mod utils;
 
 use adx_utills::calc_adx;
 use itertools::izip;
 use rayon::prelude::*;
-use rsi_utills::{compute_rsi_vec, rma_rs};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
@@ -61,19 +60,24 @@ where
         .collect()
 }
 
-/// Relative Strength Index (Smooth version?)
-/// https://www.omnicalculator.com/finance/rsi
-///
-/// Deprecated
-pub fn rsi_smooth(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
-    //compute_rsi_vec(data, n, smooth_rs)
-    vec![]
-}
-
 /// Relative Strength Index (TradingView version)
-/// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}rsi
+///
+/// [reference](https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}rsi)
 pub fn rsi(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
-    compute_rsi_vec(data, n, rma_rs)
+    let (gain, loss) = utils::compute_gainloss(data);
+    let rs_vec = utils::rma_rs(&gain, &loss, n);
+    let rsi = rs_vec
+        .par_iter()
+        .map(|rs_o| {
+            if let Some(rs) = rs_o {
+                100.0 - 100.0 / (1.0 + rs)
+            } else {
+                100.0 - 100.0 / (1.0 + f64::NAN)
+            }
+        })
+        .collect::<Vec<f64>>();
+
+    embed_datetime(&rsi, data)
 }
 
 /// return (sma, lower, upper)
