@@ -1,4 +1,4 @@
-use crate::{embed_datetime, rma, DTValue, Ohlc};
+use crate::{embed_datetime, ta, DTValue, Ohlc};
 use rayon::prelude::*;
 
 fn nan_iter(n: usize) -> impl Iterator<Item = f64> {
@@ -7,12 +7,16 @@ fn nan_iter(n: usize) -> impl Iterator<Item = f64> {
 
 fn compute_gainloss(data: &[Ohlc]) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
     rayon::iter::once((None, None))
-        .chain(data.par_iter().zip(data.par_iter().skip(1)).map(|(prev, curr)| {
-            (
-                Some((curr.close - prev.close).max(0f64)),
-                Some((prev.close - curr.close).max(0f64)),
-            )
-        }))
+        .chain(
+            data.par_iter()
+                .zip(data.par_iter().skip(1))
+                .map(|(prev, curr)| {
+                    (
+                        Some((curr.close - prev.close).max(0f64)),
+                        Some((prev.close - curr.close).max(0f64)),
+                    )
+                }),
+        )
         .unzip()
 }
 
@@ -45,9 +49,9 @@ pub fn smooth_rs(gain: &[f64], loss: &[f64], n: usize) -> Vec<f64> {
 }
 
 pub fn rma_rs(gain: &[Option<f64>], loss: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
-    rma(gain, n)
+    ta::rma(gain, n)
         .par_iter()
-        .zip(rma(loss, n).par_iter())
+        .zip(ta::rma(loss, n).par_iter())
         .map(|(g, l)| {
             if let (Some(g), Some(l)) = (g, l) {
                 Some(g / l)
@@ -63,14 +67,16 @@ type RsF = fn(&[Option<f64>], &[Option<f64>], usize) -> Vec<Option<f64>>;
 pub fn compute_rsi_vec(data: &[Ohlc], n: usize, rs_fn: RsF) -> Vec<DTValue<f64>> {
     let (gain, loss) = compute_gainloss(data);
     let rs_vec = rs_fn(&gain, &loss, n);
-    let rsi = rs_vec.par_iter().map(|rs_o| {
-        if let Some(rs) = rs_o {
-            100.0 - 100.0 / (1.0 + rs)
-        } else {
-            100.0 - 100.0 / (1.0 + f64::NAN)
-        }
-    })
-    .collect::<Vec<f64>>();
+    let rsi = rs_vec
+        .par_iter()
+        .map(|rs_o| {
+            if let Some(rs) = rs_o {
+                100.0 - 100.0 / (1.0 + rs)
+            } else {
+                100.0 - 100.0 / (1.0 + f64::NAN)
+            }
+        })
+        .collect::<Vec<f64>>();
 
     embed_datetime(&rsi, data)
 }

@@ -61,72 +61,6 @@ where
         .collect()
 }
 
-/// Exponential Weighted Moving Average
-/// https://corporatefinanceinstitute.com/resources/capital-markets/exponentially-weighted-moving-average-ewma/#:~:text=What%20is%20the%20Exponentially%20Weighted,technical%20analysis%20and%20volatility%20modeling.
-///
-fn ewma(src: &[Option<f64>], alpha: f64, first: f64, n: usize) -> Vec<Option<f64>> {
-    let mut res = src
-        .iter()
-        .take_while(|x| x.is_none())
-        .copied()
-        .chain(none_iter(n - 1))
-        .chain(std::iter::once(Some(first)))
-        .collect::<Vec<Option<f64>>>();
-
-    for v in src.iter().skip_while(|x| x.is_none()).skip(n) {
-        if let (Some(v), Some(last)) = (v, res.last()) {
-            res.push(Some(alpha * v + (1f64 - alpha) * last.unwrap_or(0.0)));
-        } else {
-            res.push(None)
-        }
-    }
-    res
-}
-
-fn windows_compute(
-    src: &[Option<f64>],
-    n: usize,
-    f: impl Fn(&[Option<f64>]) -> Option<f64> + Send + Sync,
-) -> Vec<Option<f64>> {
-    let skipped_src = src
-        .iter()
-        .skip_while(|x| x.is_none())
-        .copied()
-        .collect::<Vec<Option<f64>>>();
-
-    none_par_iter(src.len() - skipped_src.len() + n - 1)
-        .chain(skipped_src.par_windows(n).map(f))
-        .collect()
-}
-
-/// Simple Moving Average
-/// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}sma
-pub fn sma(src: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
-    windows_compute(src, n, |xs| {
-        Some(xs.iter().filter_map(|v| *v).sum::<f64>() / n as f64)
-    })
-}
-
-/// Relative Moving Average
-/// https://www.tradingcode.net/tradingview/relative-moving-average/
-///
-/// Need to guarantee that we only have None on the first part of src
-fn rma(src: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
-    let alpha = 1f64 / n as f64;
-    let sma = src.iter().filter_map(|v| *v).take(n).sum::<f64>() / n as f64;
-
-    ewma(src, alpha, sma, n)
-}
-
-/// Exponential Moving Average
-/// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}ema
-pub fn ema(src: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
-    let alpha = 2f64 / (n as f64 + 1f64);
-    let sma = src.iter().filter_map(|v| *v).take(n).sum::<f64>() / n as f64;
-
-    ewma(src, alpha, sma, n)
-}
-
 /// Relative Strength Index (Smooth version?)
 /// https://www.omnicalculator.com/finance/rsi
 ///
@@ -142,30 +76,11 @@ pub fn rsi(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
     compute_rsi_vec(data, n, rma_rs)
 }
 
-fn std_dev(src: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
-    windows_compute(src, n, |xs| {
-        let mean = xs.iter().filter_map(|v| *v).sum::<f64>() / n as f64;
-        Some(
-            (xs.iter()
-                .map(|x| {
-                    if let Some(v) = x {
-                        (v - mean).powi(2)
-                    } else {
-                        0.0
-                    }
-                })
-                .sum::<f64>()
-                / n as f64)
-                .sqrt(),
-        )
-    })
-}
-
 /// return (sma, lower, upper)
 fn bb_utill(src: &[f64], n: usize, mult: f64) -> Vec<(f64, f64, f64)> {
     let dt = to_option_vec(src);
-    let basis = sma(&dt, n);
-    let dev = std_dev(&dt, n);
+    let basis = ta::sma(&dt, n);
+    let dev = ta::stdev(&dt, n);
     basis
         .par_iter()
         .zip(dev.par_iter())
@@ -231,8 +146,8 @@ pub fn macd(data: &[Ohlc]) -> Vec<DTValue<(f64, f64, f64)>> {
     let dt = to_option_vec(&close_p(data));
 
     // shorter ema - longer ema
-    let macd_line = calc_macd_line(&dt, 12, 26, ema);
-    let signal_line = ema(&macd_line, 9);
+    let macd_line = calc_macd_line(&dt, 12, 26, ta::ema);
+    let signal_line = ta::ema(&macd_line, 9);
     let hist = vec_diff(&macd_line, &signal_line);
 
     let zipped = macd_line
@@ -288,10 +203,10 @@ fn strength_term<
 pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
     let dt = to_option_vec(&close_p(data));
 
-    let short_sma = sma(&dt, 12);
-    let long_sma = sma(&dt, 26);
+    let short_sma = ta::sma(&dt, 12);
+    let long_sma = ta::sma(&dt, 26);
     let macd_line = vec_diff(&short_sma, &long_sma);
-    let signal_line = ema(&macd_line, 9);
+    let signal_line = ta::ema(&macd_line, 9);
     let divergence = vec_diff(&macd_line, &signal_line);
 
     let open = to_option_vec(&data.iter().map(|x| x.open).collect::<Vec<f64>>());
@@ -330,95 +245,4 @@ pub fn obv(data: &[Ohlc]) -> Vec<DTValue<f64>> {
         .collect::<Vec<f64>>();
 
     embed_datetime(&result, data)
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use float_cmp::approx_eq;
-
-    #[test]
-    fn test_rma_with_none() {
-        let data = vec![None, Some(1.0), Some(2.0), Some(3.0)];
-        let rma = rma(&data, 2);
-
-        for (v, expected) in rma.iter().zip(
-            vec![
-                None,
-                None,
-                Some(3.0 / 2.0),
-                Some((1.0 / 2.0) * 3.0 + (1.0 / 2.0) * (3.0 / 2.0)),
-            ]
-            .iter(),
-        ) {
-            assert_eq!(v, expected);
-        }
-    }
-
-    #[test]
-    fn test_rma() {
-        let data = vec![Some(0.5), Some(1.0), Some(2.0), Some(3.0)];
-        let rma = rma(&data, 3);
-
-        for (v, expected) in rma.iter().zip(
-            vec![
-                None,
-                None,
-                Some(3.5 / 3.0),
-                Some((1.0 / 3.0) * 3.0 + (2.0 / 3.0) * (3.5 / 3.0)),
-            ]
-            .iter(),
-        ) {
-            if let (Some(v), Some(expected)) = (v, expected) {
-                assert!(approx_eq!(f64, *v, *expected, epsilon = 1e-6));
-            } else {
-                assert_eq!(v, expected)
-            }
-        }
-    }
-
-    #[test]
-    fn test_ema() {
-        let src = vec![Some(1.0), Some(2.0), Some(3.0)];
-        let length = 2;
-        let ema_values = ema(&src, length);
-        assert_eq!(ema_values.len(), src.len());
-
-        for (v, expected) in ema_values.iter().zip(
-            vec![
-                None,
-                Some(3.0 / 2.0),
-                Some((2.0 / 3.0) * 3.0 + (1.0 / 3.0) * (3.0 / 2.0)),
-            ]
-            .iter(),
-        ) {
-            if let (Some(v), Some(expected)) = (v, expected) {
-                assert!(approx_eq!(f64, *v, *expected, epsilon = 1e-6));
-            } else {
-                assert_eq!(v, expected)
-            }
-        }
-    }
-
-    #[test]
-    fn test_sma() {
-        let src = vec![Some(10.0), Some(20.0), Some(30.0), Some(40.0)];
-        let sma_values = sma(&src, 3);
-
-        let expected_sma = vec![
-            None,
-            None,
-            Some(20.0), // (10 + 20 + 30) / 3
-            Some(30.0), // (20 + 30 + 40) / 3
-        ];
-
-        assert_eq!(sma_values.len(), expected_sma.len());
-        for (value, expected) in sma_values.iter().zip(expected_sma.iter()) {
-            if let (Some(value), Some(expected)) = (value, expected) {
-                assert!(approx_eq!(f64, *value, *expected, epsilon = 1e-6));
-            } else {
-                assert_eq!(value, expected)
-            }
-        }
-    }
 }

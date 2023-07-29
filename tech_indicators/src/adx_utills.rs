@@ -1,4 +1,4 @@
-use crate::{embed_datetime, none_iter, rma, DTValue, Ohlc, none_par_iter};
+use crate::{embed_datetime, none_iter, none_par_iter, ta, DTValue, Ohlc};
 use rayon::prelude::*;
 
 /// True Range
@@ -56,10 +56,10 @@ fn calc_di(dm: &[Option<f64>], tr: &[Option<f64>]) -> Vec<Option<f64>> {
 
 pub fn calc_adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
     let (dm_p, dm_m) = calc_dm(data);
-    let tr = rma(&tr(data), n);
+    let tr = ta::rma(&tr(data), n);
 
-    let plus = calc_di(&rma(&dm_p, n), &tr);
-    let minus = calc_di(&rma(&dm_m, n), &tr);
+    let plus = calc_di(&ta::rma(&dm_p, n), &tr);
+    let minus = calc_di(&ta::rma(&dm_m, n), &tr);
 
     let sum = plus.par_iter().zip(minus.par_iter()).map(|(p, m)| {
         if let (Some(p), Some(m)) = (p, m) {
@@ -82,7 +82,7 @@ pub fn calc_adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
         })
         .collect::<Vec<Option<f64>>>();
 
-    let smooth_adx = rma(&adx, n)
+    let smooth_adx = ta::rma(&adx, n)
         .par_iter()
         .map(|x| if let Some(v) = x { 100.0 * v } else { f64::NAN })
         .collect::<Vec<f64>>();
