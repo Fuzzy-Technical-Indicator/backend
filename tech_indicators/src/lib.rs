@@ -1,10 +1,8 @@
-mod adx_utills;
 pub mod fuzzy;
 pub mod math;
 pub mod ta;
 mod utils;
 
-use adx_utills::calc_adx;
 use itertools::izip;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -80,79 +78,47 @@ pub fn rsi(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
     embed_datetime(&rsi, data)
 }
 
-/// return (sma, lower, upper)
-fn bb_utill(src: &[f64], n: usize, mult: f64) -> Vec<(f64, f64, f64)> {
-    let dt = to_option_vec(src);
-    let basis = ta::sma(&dt, n);
-    let dev = ta::stdev(&dt, n);
-    basis
+/// Bollinger Bands
+///
+/// [reference](https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}bb)
+pub fn bb(data: &[Ohlc], n: usize, mult: f64) -> Vec<DTValue<(f64, f64, f64)>> {
+    let src = to_option_vec(&close_p(data));
+
+    let basis = ta::sma(&src, n);
+    let dev = ta::stdev(&src, n);
+    let bb_res = basis
         .par_iter()
         .zip(dev.par_iter())
-        .map(|(sma, d)| {
-            if let (Some(sma), Some(d)) = (sma, d) {
-                (*sma, sma - mult * d, sma + mult * d)
-            } else {
-                (f64::NAN, f64::NAN, f64::NAN)
-            }
+        .map(|(sma_opt, d_opt)| match (sma_opt, d_opt) {
+            (Some(sma), Some(d)) => (*sma, sma - mult * d, sma + mult * d),
+            _ => (f64::NAN, f64::NAN, f64::NAN),
         })
-        .collect()
-}
+        .collect::<Vec<(f64, f64, f64)>>();
 
-/// Bollinger Bands
-/// https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}bb
-pub fn bb(data: &[Ohlc], n: usize, mult: f64) -> Vec<DTValue<(f64, f64, f64)>> {
-    let bb_res = bb_utill(&close_p(data), n, mult);
     embed_datetime(&bb_res, data)
 }
 
-fn calc_macd_line(
-    src: &[Option<f64>],
-    short: usize,
-    long: usize,
-    f: impl Fn(&[Option<f64>], usize) -> Vec<Option<f64>>,
-) -> Vec<Option<f64>> {
-    if short > long {
-        panic!("short should be less than long");
+/// Moving Average Convergence/Divergence
+///
+/// [reference](https://www.tradingview.com/support/solutions/43000502344-macd-moving-average-convergence-divergence/)
+pub fn macd(
+    data: &[Ohlc],
+    fastlen: usize,
+    slowlen: usize,
+    siglen: usize,
+) -> Vec<DTValue<(f64, f64, f64)>> {
+    if fastlen > slowlen {
+        panic!("fastlen should be less than slowlen");
     }
 
-    f(src, short)
-        .par_iter()
-        .zip(f(src, long).par_iter())
-        .map(|(a, b)| {
-            if let (Some(a), Some(b)) = (a, b) {
-                Some(a - b)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// xs - ys
-fn vec_diff(xs: &[Option<f64>], ys: &[Option<f64>]) -> Vec<Option<f64>> {
-    xs.par_iter()
-        .zip(ys.par_iter())
-        .map(|(a, b)| {
-            if let (Some(a), Some(b)) = (a, b) {
-                Some(a - b)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Moving Average Convergence/Divergence
-/// https://www.tradingview.com/support/solutions/43000502344-macd-moving-average-convergence-divergence/
-///
-/// Currently every parameters is hard-coded, and we are using sma instead of ema
-pub fn macd(data: &[Ohlc]) -> Vec<DTValue<(f64, f64, f64)>> {
-    let dt = to_option_vec(&close_p(data));
+    let src = to_option_vec(&close_p(data));
 
     // shorter ema - longer ema
-    let macd_line = calc_macd_line(&dt, 12, 26, ta::ema);
-    let signal_line = ta::ema(&macd_line, 9);
-    let hist = vec_diff(&macd_line, &signal_line);
+    let fast = ta::ema(&src, fastlen);
+    let slow = ta::ema(&src, slowlen);
+    let macd_line = utils::vec_diff(&fast, &slow);
+    let signal_line = ta::ema(&macd_line, siglen);
+    let hist = utils::vec_diff(&macd_line, &signal_line);
 
     let zipped = macd_line
         .par_iter()
@@ -209,9 +175,9 @@ pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
 
     let short_sma = ta::sma(&dt, 12);
     let long_sma = ta::sma(&dt, 26);
-    let macd_line = vec_diff(&short_sma, &long_sma);
+    let macd_line = utils::vec_diff(&short_sma, &long_sma);
     let signal_line = ta::ema(&macd_line, 9);
-    let divergence = vec_diff(&macd_line, &signal_line);
+    let divergence = utils::vec_diff(&macd_line, &signal_line);
 
     let open = to_option_vec(&data.iter().map(|x| x.open).collect::<Vec<f64>>());
     let o = strength_term(&open, open.iter().skip(1), 3.0);
@@ -232,7 +198,39 @@ pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
 }
 
 pub fn adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
-    calc_adx(data, n)
+    let (dm_p, dm_m) = ta::dm(data);
+    let tr = ta::rma(&ta::tr(data), n);
+
+    let plus = ta::di(&ta::rma(&dm_p, n), &tr);
+    let minus = ta::di(&ta::rma(&dm_m, n), &tr);
+
+    let sum = plus
+        .par_iter()
+        .zip(minus.par_iter())
+        .map(|(p_opt, m_opt)| match (p_opt, m_opt) {
+            (Some(p), Some(m)) => Some(p + m),
+            _ => None,
+        });
+
+    let adx = plus
+        .par_iter()
+        .zip(minus.par_iter())
+        .zip(sum)
+        .map(|((p, m), s)| match (p, m, s) {
+            (Some(p), Some(m), Some(s)) => Some((p - m).abs() / s),
+            _ => None,
+        })
+        .collect::<Vec<Option<f64>>>();
+
+    let smooth_adx = ta::rma(&adx, n)
+        .par_iter()
+        .map(|x| match x {
+            Some(v) => 100.0 * v,
+            _ => f64::NAN,
+        })
+        .collect::<Vec<f64>>();
+
+    embed_datetime(&smooth_adx, data)
 }
 
 /// On Balance Volume

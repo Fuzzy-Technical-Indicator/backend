@@ -194,7 +194,7 @@ pub fn macd_cached(
     _symbol: &str,
     _interval: &Option<Interval>,
 ) -> Vec<DTValue<(f64, f64, f64)>> {
-    macd(data)
+    macd(data, 12, 26, 9)
 }
 
 #[cached(

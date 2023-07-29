@@ -1,4 +1,4 @@
-use crate::{none_iter, none_par_iter};
+use crate::{none_iter, none_par_iter, utils, Ohlc};
 use rayon::prelude::*;
 
 /// Compares the current `source` value to it's value `length` bars ago and return the difference
@@ -108,10 +108,72 @@ pub fn stdev(src: &[Option<f64>], length: usize) -> Vec<Option<f64>> {
     })
 }
 
+/// True range. It is math.max(high - low, math.abs(high - close[1]), math.abs(low - close[1])).
+pub fn tr(data: &[Ohlc]) -> Vec<Option<f64>> {
+    none_iter(1)
+        .chain(data.iter().zip(data.iter().skip(1)).map(|(t0, t1)| {
+            Some(
+                (t1.high - t1.low)
+                    .max((t1.high - t0.close).abs())
+                    .max((t0.close - t1.low).abs()),
+            )
+        }))
+        .collect()
+}
+
+/// Directional Movement
+pub fn dm(data: &[Ohlc]) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+    let up = utils::process_pairs(data, |(t0, t1)| Some(t1.high - t0.high));
+    let down = utils::process_pairs(data, |(t0, t1)| Some(t0.low - t1.low));
+
+    up.par_iter()
+        .zip(down.par_iter())
+        .map(|(u_opt, d_opt)| match (u_opt, d_opt) {
+            (Some(u), Some(d)) => (
+                Some(if u > d && *u > 0.0 { *u } else { 0f64 }),
+                Some(if u < d && *d > 0.0 { *d } else { 0f64 }),
+            ),
+            _ => (None, None),
+        })
+        .unzip()
+}
+
+/// Directional Index
+pub fn di(dm: &[Option<f64>], tr: &[Option<f64>]) -> Vec<Option<f64>> {
+    dm.par_iter()
+        .zip(tr.par_iter())
+        .map(|(dm_p_opt, tr_opt)| match (dm_p_opt, tr_opt) {
+            (Some(dm_p), Some(tr)) => Some(100.0 * dm_p / tr),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use float_cmp::approx_eq;
+
+    fn ohlc_with(high: f64, low: f64, close: f64) -> Ohlc {
+        Ohlc {
+            ticker: "".to_string(),
+            time: bson::DateTime::now(),
+            open: 0.0,
+            high,
+            low,
+            close,
+            volume: 0,
+        }
+    }
+
+    fn test_set() -> Vec<Ohlc> {
+        vec![
+            ohlc_with(2.0, 1.0, 2.0),
+            ohlc_with(3.0, 2.0, 2.5),
+            ohlc_with(4.0, 3.0, 3.0),
+            ohlc_with(5.0, 2.0, 3.0),
+        ]
+    }
 
     #[test]
     fn test_rma_with_none() {
@@ -195,6 +257,38 @@ mod test {
             } else {
                 assert_eq!(value, expected)
             }
+        }
+    }
+
+    #[test]
+    fn test_dm() {
+        let data = test_set();
+        let (dm_p, dm_m) = dm(&data);
+
+        for (v, expected) in dm_p
+            .iter()
+            .zip(vec![None, Some(1.0), Some(1.0), Some(0.0)].iter())
+        {
+            assert_eq!(v, expected);
+        }
+        for (v, expected) in dm_m
+            .iter()
+            .zip(vec![None, Some(0.0), Some(0.0), Some(0.0)].iter())
+        {
+            assert_eq!(v, expected);
+        }
+    }
+
+    #[test]
+    fn test_tr() {
+        let data = test_set();
+        let tr = tr(&data);
+
+        for (v, expected) in tr
+            .iter()
+            .zip(vec![None, Some(1.0), Some(1.5), Some(3.0)].iter())
+        {
+            assert_eq!(v, expected);
         }
     }
 }
