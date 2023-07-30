@@ -18,18 +18,36 @@ pub struct Ohlc {
     pub volume: u64,
 }
 
+pub trait OhlcSliceOps {
+    fn volumes(&self) -> Vec<Option<u64>>;
+    fn closes(&self) -> Vec<Option<f64>>;
+    fn highs(&self) -> Vec<Option<f64>>;
+    fn lows(&self) -> Vec<Option<f64>>;
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Hash)]
 pub struct DTValue<T> {
     time: i64,
     value: T,
 }
 
-fn volume(data: &[Ohlc]) -> Vec<Option<u64>> {
-    data.par_iter().map(|x| Some(x.volume)).collect()
-}
+impl OhlcSliceOps for [Ohlc] {
+    /// return Some(volume) of all OHLC
+    fn volumes(&self) -> Vec<Option<u64>> {
+        self.par_iter().map(|x| Some(x.volume)).collect()
+    }
 
-fn close_p(data: &[Ohlc]) -> Vec<f64> {
-    data.par_iter().map(|x| x.close).collect()
+    fn closes(&self) -> Vec<Option<f64>> {
+        self.par_iter().map(|x| Some(x.close)).collect()
+    }
+
+    fn highs(&self) -> Vec<Option<f64>> {
+        self.par_iter().map(|x| Some(x.high)).collect()
+    }
+
+    fn lows(&self) -> Vec<Option<f64>> {
+        self.par_iter().map(|x| Some(x.low)).collect()
+    }
 }
 
 fn none_iter<T: Copy>(n: usize) -> impl Iterator<Item = Option<T>> {
@@ -82,7 +100,7 @@ pub fn rsi(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
 ///
 /// [reference](https://www.tradingview.com/pine-script-reference/v5/#fun_ta{dot}bb)
 pub fn bb(data: &[Ohlc], n: usize, mult: f64) -> Vec<DTValue<(f64, f64, f64)>> {
-    let src = to_option_vec(&close_p(data));
+    let src = data.closes();
 
     let basis = ta::sma(&src, n);
     let dev = ta::stdev(&src, n);
@@ -111,7 +129,7 @@ pub fn macd(
         panic!("fastlen should be less than slowlen");
     }
 
-    let src = to_option_vec(&close_p(data));
+    let src = data.closes();
 
     // shorter ema - longer ema
     let fast = ta::ema(&src, fastlen);
@@ -171,7 +189,7 @@ fn strength_term<
 
 /// From Naranjo paper
 pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
-    let dt = to_option_vec(&close_p(data));
+    let dt = data.closes();
 
     let short_sma = ta::sma(&dt, 12);
     let long_sma = ta::sma(&dt, 26);
@@ -235,9 +253,9 @@ pub fn adx(data: &[Ohlc], n: usize) -> Vec<DTValue<f64>> {
 
 /// On Balance Volume
 pub fn obv(data: &[Ohlc]) -> Vec<DTValue<f64>> {
-    let close = to_option_vec(&close_p(data));
+    let close = data.closes();
     let signs = &math::sign(&ta::change(&close, 1));
-    let values = ta::cum(&math::mult_u64(&signs, &volume(data)));
+    let values = ta::cum(&math::mult_u64(&signs, &data.volumes()));
     let result = values
         .par_iter()
         .map(|v| match v {
@@ -247,4 +265,31 @@ pub fn obv(data: &[Ohlc]) -> Vec<DTValue<f64>> {
         .collect::<Vec<f64>>();
 
     embed_datetime(&result, data)
+}
+
+pub fn aroon(data: &[Ohlc], length: usize) -> Vec<DTValue<(f64, f64)>> {
+    let len = length as f64;
+
+    let upper = ta::highestbars(&data.highs(), length)
+        .iter()
+        .map(|opt| match opt {
+            Some(x) => 100f64 * ((x + len) / len),
+            _ => f64::NAN,
+        })
+        .collect::<Vec<f64>>();
+
+    let lower = ta::lowestbars(&data.lows(), length)
+        .iter()
+        .map(|opt| match opt {
+            Some(x) => 100f64 * ((x + len) / len),
+            _ => f64::NAN,
+        })
+        .collect::<Vec<f64>>();
+
+    let zipped = upper
+        .into_par_iter()
+        .zip(lower.into_par_iter())
+        .collect::<Vec<(f64, f64)>>();
+
+    embed_datetime(&zipped, data)
 }

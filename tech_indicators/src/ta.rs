@@ -149,6 +149,40 @@ pub fn di(dm: &[Option<f64>], tr: &[Option<f64>]) -> Vec<Option<f64>> {
         .collect()
 }
 
+/// Highest value offset for a given number of bars back.
+pub fn highestbars(source: &[Option<f64>], length: usize) -> Vec<Option<f64>> {
+    windows_compute(source, length, |xs| {
+        let mut max = f64::MIN;
+        let mut offset = 0.0;
+        for (i, v) in xs.iter().rev().enumerate() {
+            if let Some(value) = v {
+                if *value > max {
+                    offset = -(i as f64);
+                    max = *value
+                }
+            }
+        }
+        Some(offset)
+    })
+}
+
+/// Lowest value offset for a given number of bars back.
+pub fn lowestbars(source: &[Option<f64>], length: usize) -> Vec<Option<f64>> {
+    windows_compute(source, length, |xs| {
+        let mut min = f64::MAX;
+        let mut offset = 0.0;
+        for (i, v) in xs.iter().rev().enumerate() {
+            if let Some(value) = v {
+                if *value < min {
+                    offset = -(i as f64);
+                    min = *value
+                }
+            }
+        }
+        Some(offset)
+    })
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

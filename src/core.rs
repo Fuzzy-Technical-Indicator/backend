@@ -8,7 +8,9 @@ use mongodb::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use tech_indicators::{adx, bb, fuzzy::fuzzy_indicator, macd, my_macd, obv, rsi, DTValue, Ohlc};
+use tech_indicators::{
+    adx, aroon, bb, fuzzy::fuzzy_indicator, macd, my_macd, obv, rsi, DTValue, Ohlc,
+};
 
 use crate::Interval;
 
@@ -223,4 +225,16 @@ pub fn mymacd_cached(
 )]
 pub fn obv_cached(data: &[Ohlc], _symbol: &str, _interval: &Option<Interval>) -> Vec<DTValue<f64>> {
     obv(data)
+}
+
+#[cached(
+    key = "String",
+    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+)]
+pub fn aroon_cached(
+    data: &[Ohlc],
+    _symbol: &str,
+    _interval: &Option<Interval>,
+) -> Vec<DTValue<(f64, f64)>> {
+    aroon(data, 14)
 }
