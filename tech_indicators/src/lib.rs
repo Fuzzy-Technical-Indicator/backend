@@ -20,6 +20,7 @@ pub struct Ohlc {
 
 pub trait OhlcSliceOps {
     fn volumes(&self) -> Vec<Option<u64>>;
+    fn opens(&self) -> Vec<Option<f64>>;
     fn closes(&self) -> Vec<Option<f64>>;
     fn highs(&self) -> Vec<Option<f64>>;
     fn lows(&self) -> Vec<Option<f64>>;
@@ -43,6 +44,10 @@ pub struct DTValue<T> {
 impl OhlcSliceOps for [Ohlc] {
     fn volumes(&self) -> Vec<Option<u64>> {
         self.par_iter().map(|x| Some(x.volume)).collect()
+    }
+
+    fn opens(&self) -> Vec<Option<f64>> {
+        self.par_iter().map(|x| Some(x.open)).collect()
     }
 
     fn closes(&self) -> Vec<Option<f64>> {
@@ -228,8 +233,8 @@ pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
     let signal_line = ta::ema(&macd_line, 9);
     let divergence = utils::vec_diff(&macd_line, &signal_line);
 
-    let open = to_option_vec(&data.iter().map(|x| x.open).collect::<Vec<f64>>());
-    let o = strength_term(&open, open.iter().skip(1), 3.0);
+    let opens = data.opens();
+    let o = strength_term(&opens, opens.iter().skip(1), 3.0);
     let div = strength_term(&divergence, divergence.iter().skip(1), 3.0);
     let sma_d = strength_term(&short_sma, &long_sma, 10.0);
 
@@ -351,4 +356,30 @@ pub fn accum_dist(data: &[Ohlc]) -> Vec<DTValue<f64>> {
         .collect::<Vec<f64>>();
 
     embed_datetime(&ac, data)
+}
+
+pub fn stoch(
+    data: &[Ohlc],
+    period_k: usize,
+    period_d: usize,
+    smooth_k: usize,
+) -> Vec<DTValue<(f64, f64)>> {
+    let k = ta::sma(
+        &ta::stoch(&data.closes(), &data.highs(), &data.lows(), period_k),
+        smooth_k,
+    );
+    let d = ta::sma(&k, period_d);
+
+    let result = k
+        .par_iter()
+        .zip(d.par_iter())
+        .map(|(x0, x1)| match (x0, x1) {
+            (Some(v0), Some(v1)) => (*v0, *v1),
+            (Some(v0), _) => (*v0, f64::NAN),
+            (_, Some(v1)) => (f64::NAN, *v1),
+            _ => (f64::NAN, f64::NAN),
+        })
+        .collect::<Vec<(f64, f64)>>();
+
+    embed_datetime(&result, data)
 }

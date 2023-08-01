@@ -9,7 +9,8 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tech_indicators::{
-    accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, my_macd, obv, rsi, DTValue, Ohlc,
+    accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, my_macd, obv, rsi, stoch, DTValue,
+    Ohlc,
 };
 
 use crate::Interval;
@@ -249,4 +250,16 @@ pub fn accum_dist_cached(
     _interval: &Option<Interval>,
 ) -> Vec<DTValue<f64>> {
     accum_dist(&data)
+}
+
+#[cached(
+    key = "String",
+    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+)]
+pub fn stoch_cached(
+    data: &[Ohlc],
+    _symbol: &str,
+    _interval: &Option<Interval>,
+) -> Vec<DTValue<(f64, f64)>> {
+    stoch(data, 14, 3, 1)
 }

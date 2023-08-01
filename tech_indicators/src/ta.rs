@@ -183,6 +183,58 @@ pub fn lowestbars(source: &[Option<f64>], length: usize) -> Vec<Option<f64>> {
     })
 }
 
+/// Lowest value for a given number of bars back.
+pub fn lowest(source: &[Option<f64>], length: usize) -> Vec<Option<f64>> {
+    windows_compute(source, length, |xs| {
+        xs.iter().rev().fold(None, |min, x| match (min, x) {
+            (None, Some(value)) => Some(*value),
+            (Some(min_v), Some(value)) => {
+                if *value < min_v {
+                    return Some(*value);
+                }
+                min
+            }
+            _ => min,
+        })
+    })
+}
+
+/// Highest value for a given number of bars back.
+pub fn highest(source: &[Option<f64>], length: usize) -> Vec<Option<f64>> {
+    windows_compute(source, length, |xs| {
+        xs.iter().rev().fold(None, |max, x| match (max, x) {
+            (None, Some(value)) => Some(*value),
+            (Some(max_v), Some(value)) => {
+                if *value > max_v {
+                    return Some(*value);
+                }
+                max
+            }
+            _ => max,
+        })
+    })
+}
+
+pub fn stoch(
+    source: &[Option<f64>],
+    highs: &[Option<f64>],
+    lows: &[Option<f64>],
+    length: usize,
+) -> Vec<Option<f64>> {
+    let highests = highest(highs, length);
+    let lowests = lowest(lows, length);
+    source
+        .par_iter()
+        .zip(highests.par_iter().zip(lowests.par_iter()))
+        .map(|(s, (high_opt, low_opt))| match (s, high_opt, low_opt) {
+            (Some(v), Some(highest), Some(lowest)) => {
+                Some(100.0 * (v - lowest) / (highest - lowest))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
