@@ -23,6 +23,15 @@ pub trait OhlcSliceOps {
     fn closes(&self) -> Vec<Option<f64>>;
     fn highs(&self) -> Vec<Option<f64>>;
     fn lows(&self) -> Vec<Option<f64>>;
+    fn ohlcv(
+        &self,
+    ) -> Vec<(
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<u64>,
+    )>;
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Hash)]
@@ -32,7 +41,6 @@ pub struct DTValue<T> {
 }
 
 impl OhlcSliceOps for [Ohlc] {
-    /// return Some(volume) of all OHLC
     fn volumes(&self) -> Vec<Option<u64>> {
         self.par_iter().map(|x| Some(x.volume)).collect()
     }
@@ -47,6 +55,29 @@ impl OhlcSliceOps for [Ohlc] {
 
     fn lows(&self) -> Vec<Option<f64>> {
         self.par_iter().map(|x| Some(x.low)).collect()
+    }
+
+    /// return (open, high, low, close, volume) list
+    fn ohlcv(
+        &self,
+    ) -> Vec<(
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<u64>,
+    )> {
+        self.par_iter()
+            .map(|x| {
+                (
+                    Some(x.open),
+                    Some(x.high),
+                    Some(x.low),
+                    Some(x.close),
+                    Some(x.volume),
+                )
+            })
+            .collect()
     }
 }
 
@@ -292,4 +323,32 @@ pub fn aroon(data: &[Ohlc], length: usize) -> Vec<DTValue<(f64, f64)>> {
         .collect::<Vec<(f64, f64)>>();
 
     embed_datetime(&zipped, data)
+}
+
+pub fn accum_dist(data: &[Ohlc]) -> Vec<DTValue<f64>> {
+    let mfm = data
+        .ohlcv()
+        .par_iter()
+        .map(
+            |(_, h_opt, l_opt, c_opt, v_opt)| match (c_opt, l_opt, h_opt, v_opt) {
+                (Some(close), Some(low), Some(high), Some(volume)) => {
+                    if high == low {
+                        return Some(0.0);
+                    }
+                    Some(((2.0 * close - low - high) / (high - low)) * (*volume as f64))
+                }
+                _ => None,
+            },
+        )
+        .collect::<Vec<Option<f64>>>();
+
+    let ac = ta::cum(&mfm)
+        .par_iter()
+        .map(|x| match x {
+            Some(v) => *v,
+            _ => f64::NAN,
+        })
+        .collect::<Vec<f64>>();
+
+    embed_datetime(&ac, data)
 }

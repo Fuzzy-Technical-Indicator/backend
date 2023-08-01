@@ -1,8 +1,8 @@
 pub mod core;
 
 use crate::core::{
-    adx_cached, aroon_cached, bb_cached, fetch_symbol, fetch_user_ohlc, fuzzy_cached, macd_cached,
-    mymacd_cached, obv_cached, rsi_cached,
+    accum_dist_cached, adx_cached, aroon_cached, bb_cached, fetch_symbol, fetch_user_ohlc,
+    fuzzy_cached, macd_cached, mymacd_cached, obv_cached, rsi_cached,
 };
 use actix_cors::Cors;
 use actix_web::{get, middleware::Logger, web, App, HttpServer, Responder};
@@ -99,6 +99,18 @@ async fn indicator_aroon(db: web::Data<Client>, params: web::Query<QueryParams>)
     web::Json(aroon_cached(&data, symbol, interval))
 }
 
+#[get("/indicator/accumdist")]
+async fn indicator_accum_dist(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+) -> impl Responder {
+    let symbol = &params.symbol;
+    let interval = &params.interval;
+
+    let data = fetch_symbol(db, symbol, interval).await;
+    web::Json(accum_dist_cached(&data, symbol, interval))
+}
+
 #[get("/fuzzy")]
 async fn fuzzy_route(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
     let symbol = &params.symbol;
@@ -135,7 +147,8 @@ async fn main() -> std::io::Result<()> {
                     .service(indicator_rsi)
                     .service(indicator_mymacd)
                     .service(indicator_obv)
-                    .service(indicator_aroon),
+                    .service(indicator_aroon)
+                    .service(indicator_accum_dist),
             )
     })
     .bind(("127.0.0.1", 8000))?

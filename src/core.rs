@@ -9,7 +9,7 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tech_indicators::{
-    adx, aroon, bb, fuzzy::fuzzy_indicator, macd, my_macd, obv, rsi, DTValue, Ohlc,
+    accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, my_macd, obv, rsi, DTValue, Ohlc,
 };
 
 use crate::Interval;
@@ -237,4 +237,16 @@ pub fn aroon_cached(
     _interval: &Option<Interval>,
 ) -> Vec<DTValue<(f64, f64)>> {
     aroon(data, 14)
+}
+
+#[cached(
+    key = "String",
+    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+)]
+pub fn accum_dist_cached(
+    data: &[Ohlc],
+    _symbol: &str,
+    _interval: &Option<Interval>,
+) -> Vec<DTValue<f64>> {
+    accum_dist(&data)
 }
