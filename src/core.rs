@@ -9,8 +9,8 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tech_indicators::{
-    accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, my_macd, obv, rsi, stoch, DTValue,
-    Ohlc,
+    accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, naranjo_macd, obv, rsi, stoch,
+    DTValue, Ohlc,
 };
 
 use crate::Interval;
@@ -212,18 +212,6 @@ pub fn adx_cached(data: &[Ohlc], _symbol: &str, _interval: &Option<Interval>) ->
     key = "String",
     convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
 )]
-pub fn mymacd_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: &Option<Interval>,
-) -> Vec<DTValue<f64>> {
-    my_macd(data)
-}
-
-#[cached(
-    key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
-)]
 pub fn obv_cached(data: &[Ohlc], _symbol: &str, _interval: &Option<Interval>) -> Vec<DTValue<f64>> {
     obv(data)
 }
@@ -262,4 +250,16 @@ pub fn stoch_cached(
     _interval: &Option<Interval>,
 ) -> Vec<DTValue<(f64, f64)>> {
     stoch(data, 14, 3, 1)
+}
+
+#[cached(
+    key = "String",
+    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+)]
+pub fn naranjo_macd_cached(
+    data: &[Ohlc],
+    _symbol: &str,
+    _interval: &Option<Interval>,
+) -> Vec<DTValue<f64>> {
+    naranjo_macd(data)
 }

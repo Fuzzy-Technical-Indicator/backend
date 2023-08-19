@@ -28,7 +28,7 @@ pub fn rma_rs(gain: &[Option<f64>], loss: &[Option<f64>], n: usize) -> Vec<Optio
         .collect()
 }
 
-/// xs - ys
+/// The differnce between list `xs` and list `ys`
 pub fn vec_diff(xs: &[Option<f64>], ys: &[Option<f64>]) -> Vec<Option<f64>> {
     xs.par_iter()
         .zip(ys.par_iter())

@@ -3,7 +3,7 @@ pub mod math;
 pub mod ta;
 mod utils;
 
-use itertools::izip;
+use itertools::{izip, Itertools};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -166,14 +166,7 @@ pub fn macd(
     }
 
     let src = data.closes();
-
-    // shorter ema - longer ema
-    let fast = ta::ema(&src, fastlen);
-    let slow = ta::ema(&src, slowlen);
-    let macd_line = utils::vec_diff(&fast, &slow);
-    let signal_line = ta::ema(&macd_line, siglen);
-    let hist = utils::vec_diff(&macd_line, &signal_line);
-
+    let (macd_line, signal_line, hist) = ta::macd(&src, fastlen, slowlen, siglen);
     let zipped = macd_line
         .par_iter()
         .zip(signal_line.par_iter())
@@ -190,6 +183,11 @@ pub fn macd(
     embed_datetime(&zipped, data)
 }
 
+/// d0 is previous divergence, d1 is the current divergence
+/// return
+/// - 25 for short
+/// - 75 for long
+/// - 50 for neutral
 fn get_q(d0: f64, d1: f64) -> f64 {
     if d1 > 0.0 && d0 <= 0.0 {
         75.0 // long
@@ -200,51 +198,50 @@ fn get_q(d0: f64, d1: f64) -> f64 {
     }
 }
 
-fn strength_term<
-    'a,
-    I1: IntoIterator<Item = &'a Option<f64>>,
-    I2: IntoIterator<Item = &'a Option<f64>>,
->(
-    a: I1,
-    b: I2,
-    mult: f64,
-) -> Vec<Option<f64>> {
-    let mut max_d = f64::NAN;
-    a.into_iter()
-        .zip(b.into_iter())
-        .map(|(x0, x1)| {
-            if let (Some(x0), Some(x1)) = (x0, x1) {
-                let d = x1 - x0;
+fn strength_term(l1: &[Option<f64>], l2: &[Option<f64>], mult: f64) -> Vec<Option<f64>> {
+    let mut max_d = f64::MIN;
+    l1.into_iter()
+        .zip(l2.into_iter())
+        .map(|(x0, x1)| match (x0, x1) {
+            (Some(v0), Some(v1)) => {
+                let d = v1 - v0;
                 max_d = max_d.max(d);
                 return Some(mult * d / max_d);
             }
-            None
+            _ => None,
         })
         .collect()
 }
 
 /// From Naranjo paper
-pub fn my_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
-    let dt = data.closes();
+pub fn naranjo_macd(data: &[Ohlc]) -> Vec<DTValue<f64>> {
+    let src = data.closes();
 
-    let short_sma = ta::sma(&dt, 12);
-    let long_sma = ta::sma(&dt, 26);
+    // copied from ta::macd
+    let short_sma = ta::sma(&src, 12);
+    let long_sma = ta::sma(&src, 26);
     let macd_line = utils::vec_diff(&short_sma, &long_sma);
     let signal_line = ta::ema(&macd_line, 9);
     let divergence = utils::vec_diff(&macd_line, &signal_line);
 
     let opens = data.opens();
-    let o = strength_term(&opens, opens.iter().skip(1), 3.0);
-    let div = strength_term(&divergence, divergence.iter().skip(1), 3.0);
+    let skipped_opens = opens.clone().into_iter().skip(1).collect_vec();
+    let skipped_divergence = divergence.clone().into_iter().skip(1).collect_vec();
+
+    let open_term = strength_term(&opens, &skipped_opens, 3.0);
+    let div = strength_term(&divergence, &skipped_divergence, 3.0);
     let sma_d = strength_term(&short_sma, &long_sma, 10.0);
 
-    let res = izip!(divergence.windows(2), o, div, sma_d)
-        .map(|(dv, x, y, z)| {
-            if let (Some(d0), Some(d1), Some(x), Some(y), Some(z)) = (dv[0], dv[1], x, y, z) {
+    let res = izip!(divergence.windows(2), open_term, div, sma_d)
+        .map(|(dv, x, y, z)| match (dv[0], dv[1], x, y, z) {
+            (Some(d0), Some(d1), Some(x), Some(y), Some(z)) => {
                 let q = get_q(d0, d1);
-                return q - x - y - z;
+                if q == 50.0 {
+                    return 50.0;
+                }
+                q - x - y - z
             }
-            f64::NAN
+            _ => f64::NAN,
         })
         .collect::<Vec<f64>>();
 

@@ -235,6 +235,21 @@ pub fn stoch(
         .collect()
 }
 
+pub fn macd(
+    source: &[Option<f64>],
+    fastlen: usize,
+    slowlen: usize,
+    siglen: usize,
+) -> (Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>) {
+    let fast = ema(source, fastlen);
+    let slow = ema(source, slowlen);
+    let macd_line = utils::vec_diff(&fast, &slow);
+    let signal_line = ema(&macd_line, siglen);
+    let hist = utils::vec_diff(&macd_line, &signal_line);
+
+    (macd_line, signal_line, hist)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
