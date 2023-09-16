@@ -133,6 +133,11 @@ async fn fuzzy_route(db: web::Data<Client>, params: web::Query<QueryParams>) -> 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let uri = dotenvy::var("MONGO_DB_URI").unwrap();
+    let ip = dotenvy::var("IP").unwrap_or("127.0.0.1".to_string());
+    let port: u16 = match dotenvy::var("PORT") {
+        Ok(p) => p.parse().unwrap_or(8000),
+        _ => 8000,
+    };
 
     let client = Client::with_uri_str(uri)
         .await
@@ -162,7 +167,7 @@ async fn main() -> std::io::Result<()> {
                     .service(indicator_naranjo_macd),
             )
     })
-    .bind(("127.0.0.1", 8000))?
+    .bind((ip, port))?
     .run()
     .await
 }
