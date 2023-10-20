@@ -13,7 +13,7 @@ else
 fi
 
 # Run the Docker container
-docker run -d -p 3000:3000 $IMAGE_NAME
+docker run -d -p 8000:8000 $IMAGE_NAME
 
 # Check if the container is running
 if [ $? -eq 0 ]; then
