@@ -4,7 +4,7 @@ use chrono::{Timelike, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::{
     bson::{doc, Document},
-    Client, Collection,
+    Client, Collection
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -42,7 +42,7 @@ pub fn cachable_dt() -> (u32, bool) {
 }
 
 fn aggrdoc_to_ohlc(docs: Vec<Document>) -> Vec<Ohlc> {
-    docs.iter()
+    let mut result = docs.iter()
         .map(|x| Ohlc {
             ticker: x
                 .get_document("_id")
@@ -57,10 +57,13 @@ fn aggrdoc_to_ohlc(docs: Vec<Document>) -> Vec<Ohlc> {
             low: x.get_f64("low").unwrap(),
             volume: x.get_i64("volume").unwrap() as u64,
         })
-        .collect()
+        .collect::<Vec<Ohlc>>();
+    result.sort_by_key(|dt| dt.time);
+    result
 }
 
 async fn aggr_fetch(collection: &Collection<Ohlc>, interval: &Option<Interval>) -> Vec<Ohlc> {
+    // Our free mongoDB instance doesn't support allowDiskUse so, we are sorting in the app code
     let result = collection
         .aggregate(
             vec![
@@ -85,8 +88,7 @@ async fn aggr_fetch(collection: &Collection<Ohlc>, interval: &Option<Interval>) 
                     "high": {"$max": "$high"},
                     "low": {"$min": "$low"},
                     "volume": {"$sum": "$volume"},
-                }},
-                doc! {"$sort": {"_id.time": 1}},
+                }}
             ],
             None,
         )

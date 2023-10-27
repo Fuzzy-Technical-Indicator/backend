@@ -9,7 +9,7 @@ edition = "2021"
 fuzzy_logic = { path = "fuzzy_logic" }
 tech_indicators = { path = "tech_indicators" }
 tokio = { version = "1", features = ["full"] }
-mongodb = { version = "2.3.1", features = ["bson-chrono-0_4"] }
+mongodb = { version = "2.7.0", features = ["bson-chrono-0_4"] }
 dotenvy = "0.15.6"
 chrono = "0.4.23"
 futures = "0.3"
