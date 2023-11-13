@@ -13,7 +13,7 @@ mongodb = { version = "2.7.0", features = ["bson-chrono-0_4"] }
 dotenvy = "0.15.6"
 chrono = "0.4.23"
 futures = "0.3"
-cached = "0.44.0"
+cached = { version = "0.46.1", features = ["async"] }
 env_logger = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

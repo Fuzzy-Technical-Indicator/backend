@@ -106,7 +106,7 @@ pub async fn fetch_symbol(
     db: web::Data<Client>,
     symbol: &str,
     interval: &Option<Interval>,
-) -> Vec<Ohlc> {
+) -> (Vec<Ohlc>, String) {
     let now = Instant::now();
 
     let db_client = (*db).database("StockMarket");
@@ -120,7 +120,8 @@ pub async fn fetch_symbol(
         );
     }
 
-    result
+    let label = format!("{}{:?}", symbol, interval);
+    (result, label)
 }
 
 #[cached(
@@ -132,7 +133,7 @@ pub async fn fetch_user_ohlc(
     symbol: &str,
     interval: &Option<Interval>,
 ) -> Vec<UserOhlc> {
-    let fetch_result = fetch_symbol(db, symbol, interval).await;
+    let (fetch_result, _) = fetch_symbol(db, symbol, interval).await;
     fetch_result
         .iter()
         .map(|x| UserOhlc {
@@ -171,87 +172,94 @@ pub fn fuzzy_cached(
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{}{:?}", length, data.1, cachable_dt()) }"#
 )]
-pub fn rsi_cached(data: &[Ohlc], _symbol: &str, _interval: &Option<Interval>) -> Vec<DTValue<f64>> {
-    rsi(data, 14)
+pub fn rsi_cached(data: (Vec<Ohlc>, String), length: usize) -> Vec<DTValue<f64>> {
+    rsi(&data.0, length)
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{}{:?}{:?}", length, stdev, data.1, cachable_dt()) }"#
 )]
 pub fn bb_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: &Option<Interval>,
+    data: (Vec<Ohlc>, String),
+    length: usize,
+    stdev: f64,
 ) -> Vec<DTValue<(f64, f64, f64)>> {
-    bb(data, 20, 2.0)
+    bb(&data.0, length, stdev)
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{}{}{}{:?}", fast, slow, smooth, data.1, cachable_dt()) }"#
 )]
 pub fn macd_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: &Option<Interval>,
+    data: (Vec<Ohlc>, String),
+    fast: usize,
+    slow: usize,
+    smooth: usize,
 ) -> Vec<DTValue<(f64, f64, f64)>> {
-    macd(data, 12, 26, 9)
+    macd(&data.0, fast, slow, smooth)
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{}{:?}", length, data.1, cachable_dt()) }"#
 )]
-pub fn adx_cached(data: &[Ohlc], _symbol: &str, _interval: &Option<Interval>) -> Vec<DTValue<f64>> {
-    adx(data, 14)
+pub fn adx_cached(data: (Vec<Ohlc>, String), length: usize) -> Vec<DTValue<f64>> {
+    adx(&data.0, length)
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{:?}", data.1, cachable_dt()) }"#
 )]
-pub fn obv_cached(data: &[Ohlc], _symbol: &str, _interval: &Option<Interval>) -> Vec<DTValue<f64>> {
-    obv(data)
+pub fn obv_cached(data: (Vec<Ohlc>, String)) -> Vec<DTValue<f64>> {
+    obv(&data.0)
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{}{:?}", length, data.1, cachable_dt()) }"#
 )]
 pub fn aroon_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: &Option<Interval>,
+    data: (Vec<Ohlc>, String),
+    length: usize
 ) -> Vec<DTValue<(f64, f64)>> {
-    aroon(data, 14)
+    aroon(&data.0, length)
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{:?}", data.1, cachable_dt()) }"#
 )]
 pub fn accum_dist_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: &Option<Interval>,
+    data: (Vec<Ohlc>, String),
 ) -> Vec<DTValue<f64>> {
-    accum_dist(&data)
+    accum_dist(&data.0)
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{:?}", data.1, cachable_dt()) }"#
 )]
 pub fn stoch_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: &Option<Interval>,
+    data: (Vec<Ohlc>, String),
+    k: usize,
+    d: usize,
+    length: usize
 ) -> Vec<DTValue<(f64, f64)>> {
-    stoch(data, 14, 3, 1)
+    stoch(&data.0, k, d, length)
 }
 
 #[cached(

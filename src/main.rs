@@ -27,6 +27,29 @@ struct QueryParams {
     interval: Option<Interval>,
 }
 
+#[derive(Deserialize)]
+struct LengthQueryParam {
+    length: usize,
+}
+
+#[derive(Deserialize)]
+struct BBQueryParams {
+    stdev: f64,
+}
+
+#[derive(Deserialize)]
+struct MacdQueryParams {
+    fast: usize,
+    slow: usize,
+    smooth: usize,
+}
+
+#[derive(Deserialize)]
+struct StochQueryParams {
+    k: usize,
+    d: usize,
+}
+
 #[get("/ohlc")]
 async fn ohlc(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
     let symbol = &params.symbol;
@@ -34,61 +57,89 @@ async fn ohlc(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Re
     web::Json(fetch_user_ohlc(db, symbol, interval).await)
 }
 
-#[get("/indicator/rsi")]
-async fn indicator_rsi(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
+#[get("/rsi")]
+async fn indicator_rsi(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    length_query: web::Query<LengthQueryParam>,
+) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
 
     let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(rsi_cached(&data, symbol, interval))
+    web::Json(rsi_cached(data, length_query.length))
 }
 
-#[get("/indicator/bb")]
-async fn indicator_bb(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
+#[get("/bb")]
+async fn indicator_bb(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    length_query: web::Query<LengthQueryParam>,
+    other_params: web::Query<BBQueryParams>,
+) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-
     let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(bb_cached(&data, symbol, interval))
+
+    let length = length_query.length;
+    let stdev = other_params.stdev;
+    web::Json(bb_cached(data, length, stdev))
 }
 
-#[get("/indicator/macd")]
-async fn indicator_macd(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
+#[get("/macd")]
+async fn indicator_macd(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    other_params: web::Query<MacdQueryParams>,
+) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-
     let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(macd_cached(&data, symbol, interval))
+
+    web::Json(macd_cached(
+        data,
+        other_params.fast,
+        other_params.slow,
+        other_params.smooth,
+    ))
 }
 
-#[get("/indicator/adx")]
-async fn indicator_adx(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
+#[get("/adx")]
+async fn indicator_adx(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    length_query: web::Query<LengthQueryParam>,
+) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-
     let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(adx_cached(&data, symbol, interval))
+
+    web::Json(adx_cached(data, length_query.length))
 }
 
-#[get("/indicator/obv")]
+#[get("/obv")]
 async fn indicator_obv(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
 
     let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(obv_cached(&data, symbol, interval))
+    web::Json(obv_cached(data))
 }
 
-#[get("/indicator/aroon")]
-async fn indicator_aroon(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
+#[get("/aroon")]
+async fn indicator_aroon(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    length_query: web::Query<LengthQueryParam>,
+) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
 
     let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(aroon_cached(&data, symbol, interval))
+    web::Json(aroon_cached(data, length_query.length))
 }
 
-#[get("/indicator/accumdist")]
+#[get("/accumdist")]
 async fn indicator_accum_dist(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
@@ -97,18 +148,29 @@ async fn indicator_accum_dist(
     let interval = &params.interval;
 
     let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(accum_dist_cached(&data, symbol, interval))
+    web::Json(accum_dist_cached(data))
 }
 
-#[get("/indicator/stoch")]
-async fn indicator_stoch(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
+#[get("/stoch")]
+async fn indicator_stoch(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    length_query: web::Query<LengthQueryParam>,
+    other_params: web::Query<StochQueryParams>,
+) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
 
     let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(stoch_cached(&data, symbol, interval))
+    web::Json(stoch_cached(
+        data,
+        length_query.length,
+        other_params.k,
+        other_params.d,
+    ))
 }
 
+/*
 #[get("/indicator/naranjomacd")]
 async fn indicator_naranjo_macd(
     db: web::Data<Client>,
@@ -120,6 +182,7 @@ async fn indicator_naranjo_macd(
     let data = fetch_symbol(db, symbol, interval).await;
     web::Json(naranjo_macd_cached(&data, symbol, interval))
 }
+*/
 
 #[get("/fuzzy")]
 async fn fuzzy_route(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
@@ -127,7 +190,7 @@ async fn fuzzy_route(db: web::Data<Client>, params: web::Query<QueryParams>) -> 
     let interval = &params.interval;
 
     let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(fuzzy_cached(&data, symbol, interval))
+    web::Json(fuzzy_cached(&data.0, symbol, interval))
 }
 
 #[actix_web::main]
@@ -153,9 +216,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .app_data(web::Data::new(client.clone()))
             .service(
-                web::scope("/api")
-                    .service(ohlc)
-                    .service(fuzzy_route)
+                web::scope("/api/indicators") 
                     .service(indicator_macd)
                     .service(indicator_bb)
                     .service(indicator_adx)
@@ -163,9 +224,9 @@ async fn main() -> std::io::Result<()> {
                     .service(indicator_obv)
                     .service(indicator_aroon)
                     .service(indicator_stoch)
-                    .service(indicator_accum_dist)
-                    .service(indicator_naranjo_macd),
+                    .service(indicator_accum_dist), //.service(indicator_naranjo_macd),
             )
+            .service(web::scope("/api").service(ohlc).service(fuzzy_route))
     })
     .bind((ip, port))?
     .run()
