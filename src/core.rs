@@ -2,12 +2,18 @@ use actix_web::web;
 use cached::proc_macro::cached;
 use chrono::{Timelike, Utc};
 use futures::stream::TryStreamExt;
+use fuzzy_logic::{
+    linguistic::LinguisticVar,
+    shape::{triangle, zero},
+};
 use mongodb::{
-    bson::{doc, Document},
-    Client, Collection
+    bson::{doc, to_bson, Document},
+    options::UpdateOptions,
+    Client, Collection,
 };
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use serde_json::{json, Value};
+use std::{collections::HashMap, time::Instant};
 use tech_indicators::{
     accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, naranjo_macd, obv, rsi, stoch,
     DTValue, Ohlc,
@@ -42,7 +48,8 @@ pub fn cachable_dt() -> (u32, bool) {
 }
 
 fn aggrdoc_to_ohlc(docs: Vec<Document>) -> Vec<Ohlc> {
-    let mut result = docs.iter()
+    let mut result = docs
+        .iter()
         .map(|x| Ohlc {
             ticker: x
                 .get_document("_id")
@@ -66,30 +73,28 @@ async fn aggr_fetch(collection: &Collection<Ohlc>, interval: &Option<Interval>) 
     // Our free mongoDB instance doesn't support allowDiskUse so, we are sorting in the app code
     let result = collection
         .aggregate(
-            vec![
-                doc! {"$group" : {
-                    "_id" : {
-                        "ticker": "$ticker",
-                        "time": {
-                            "$dateTrunc" : {
-                                "date": "$time",
-                                "unit": "hour",
-                                "binSize": match interval {
-                                    Some(Interval::OneHour) => 1,
-                                    Some(Interval::FourHour) => 4,
-                                    Some(Interval::OneDay) => 24,
-                                    None => 1,
-                                }
+            vec![doc! {"$group" : {
+                "_id" : {
+                    "ticker": "$ticker",
+                    "time": {
+                        "$dateTrunc" : {
+                            "date": "$time",
+                            "unit": "hour",
+                            "binSize": match interval {
+                                Some(Interval::OneHour) => 1,
+                                Some(Interval::FourHour) => 4,
+                                Some(Interval::OneDay) => 24,
+                                None => 1,
                             }
                         }
-                    },
-                    "open": {"$first": "$open"},
-                    "close": {"$last": "$close"},
-                    "high": {"$max": "$high"},
-                    "low": {"$min": "$low"},
-                    "volume": {"$sum": "$volume"},
-                }}
-            ],
+                    }
+                },
+                "open": {"$first": "$open"},
+                "close": {"$last": "$close"},
+                "high": {"$max": "$high"},
+                "low": {"$min": "$low"},
+                "volume": {"$sum": "$volume"},
+            }}],
             None,
         )
         .await
@@ -125,6 +130,7 @@ pub async fn fetch_symbol(
 }
 
 #[cached(
+    time = 120,
     key = "String",
     convert = r#"{ format!("{}{:?}{:?}", symbol, interval, cachable_dt()) }"#
 )]
@@ -149,6 +155,7 @@ pub async fn fetch_user_ohlc(
 }
 
 #[cached(
+    time = 120,
     key = "String",
     convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
 )]
@@ -230,10 +237,7 @@ pub fn obv_cached(data: (Vec<Ohlc>, String)) -> Vec<DTValue<f64>> {
     key = "String",
     convert = r#"{ format!("{}{}{:?}", length, data.1, cachable_dt()) }"#
 )]
-pub fn aroon_cached(
-    data: (Vec<Ohlc>, String),
-    length: usize
-) -> Vec<DTValue<(f64, f64)>> {
+pub fn aroon_cached(data: (Vec<Ohlc>, String), length: usize) -> Vec<DTValue<(f64, f64)>> {
     aroon(&data.0, length)
 }
 
@@ -242,9 +246,7 @@ pub fn aroon_cached(
     key = "String",
     convert = r#"{ format!("{}{:?}", data.1, cachable_dt()) }"#
 )]
-pub fn accum_dist_cached(
-    data: (Vec<Ohlc>, String),
-) -> Vec<DTValue<f64>> {
+pub fn accum_dist_cached(data: (Vec<Ohlc>, String)) -> Vec<DTValue<f64>> {
     accum_dist(&data.0)
 }
 
@@ -257,7 +259,7 @@ pub fn stoch_cached(
     data: (Vec<Ohlc>, String),
     k: usize,
     d: usize,
-    length: usize
+    length: usize,
 ) -> Vec<DTValue<(f64, f64)>> {
     stoch(&data.0, k, d, length)
 }
@@ -272,4 +274,122 @@ pub fn naranjo_macd_cached(
     _interval: &Option<Interval>,
 ) -> Vec<DTValue<f64>> {
     naranjo_macd(data)
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct LinguisticVarSetting {
+    labels: Vec<f64>,
+    #[serde(rename(serialize = "upperBoundary", deserialize = "upperBoundary"))]
+    upper_boundary: f64,
+    #[serde(rename(serialize = "lowerBoundary", deserialize = "lowerBoundary"))]
+    lower_boundary: f64,
+    graphs: HashMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct Settings {
+    #[serde(rename(serialize = "linguisticVariables", deserialize = "linguisticVariables"))]
+    linguistic_variables: HashMap<String, LinguisticVarSetting>,
+}
+
+fn to_settings(var: &LinguisticVar) -> LinguisticVarSetting {
+    let xs = var.get_finite_universe(1.0);
+    let mut ys = HashMap::new();
+    for (name, set) in var.sets.iter() {
+        let data = json!({
+            "type": set.membership_f.name,
+            "parameters": set.membership_f.parameters,
+            "data": xs.iter().map(|x| set.degree_of(*x)).collect::<Vec<f64>>(),
+        });
+
+        ys.insert(name.to_string(), data);
+    }
+
+    LinguisticVarSetting {
+        labels: xs,
+        graphs: ys,
+        lower_boundary: var.universe.0,
+        upper_boundary: var.universe.1,
+    }
+}
+
+pub async fn get_settings(db: web::Data<Client>) -> Settings {
+    let db_client = (*db).database("StockMarket");
+    let collection = db_client.collection::<SettingsModel>("settings");
+    
+    // hard coded username
+    let settings = collection
+        .find_one(doc! { "username": "tanat" }, None)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut linguistic_variables = HashMap::new();
+
+    for (k, v) in settings.linguistic_variables.iter() {
+        let var = LinguisticVar::new(
+            v.shapes
+                .iter()
+                .map(|(name, shape_info)| {
+                    let f = match shape_info.shape_type.as_str() {
+                        "triangle" => triangle(
+                            *shape_info.parameters.get("center").unwrap(),
+                            *shape_info.parameters.get("height").unwrap(),
+                            *shape_info.parameters.get("width").unwrap(),
+                        ),
+                        _ => zero(),
+                    };
+                    return (name.as_str(), f);
+                })
+                .collect(),
+            (v.lower_boundary, v.upper_boundary),
+        );
+        linguistic_variables.insert(k.to_string(), to_settings(&var));
+    }
+
+    Settings {
+        linguistic_variables,
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct LinguisticVarShapeInfo {
+    parameters: HashMap<String, f64>,
+    #[serde(rename(serialize = "shapeType", deserialize = "shapeType"))]
+    shape_type: String,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct LinguisticVarInfo {
+    #[serde(rename(serialize = "upperBoundary", deserialize = "upperBoundary"))]
+    upper_boundary: f64,
+    #[serde(rename(serialize = "lowerBoundary", deserialize = "lowerBoundary"))]
+    lower_boundary: f64,
+    shapes: HashMap<String, LinguisticVarShapeInfo>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct SettingsModel {
+    username: String,
+    #[serde(rename(serialize = "linguisticVariables", deserialize = "linguisticVariables"))]
+    linguistic_variables: HashMap<String, LinguisticVarInfo>,
+}
+
+pub async fn update_settings(db: web::Data<Client>, info: web::Json<SettingsModel>) -> String {
+    let db_client = (*db).database("StockMarket");
+    let collection = db_client.collection::<SettingsModel>("settings");
+
+    let data = to_bson(&info.linguistic_variables).unwrap();
+    let options = UpdateOptions::builder().upsert(true).build();
+    let update_result = collection
+        .update_one(
+            doc! { "username": info.username.clone()},
+            doc! { "$set": {"linguisticVariables": data }},
+            options,
+        )
+        .await;
+
+    match update_result {
+        Ok(res) => format!("{:?}", res),
+        Err(err) => format!("{:?}", err),
+    }
 }

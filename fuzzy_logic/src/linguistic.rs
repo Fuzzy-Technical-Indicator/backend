@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{arange, set::FuzzySet, F};
+use crate::{arange, set::FuzzySet, shape::Shape};
 
 pub struct LinguisticVar {
     pub sets: HashMap<String, FuzzySet>,
@@ -8,7 +8,7 @@ pub struct LinguisticVar {
 }
 
 impl LinguisticVar {
-    pub fn new(inputs: Vec<(&str, F)>, universe: (f64, f64)) -> Self {
+    pub fn new(inputs: Vec<(&str, Shape)>, universe: (f64, f64)) -> Self {
         let sets: HashMap<String, FuzzySet> = HashMap::from_iter(
             inputs
                 .iter()

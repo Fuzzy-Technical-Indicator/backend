@@ -1,33 +1,48 @@
 use rayon::prelude::*;
 use std::sync::Arc;
 
-use crate::{arange, F};
+use crate::{arange, F, shape::Shape};
 
-fn minf(mf: &F, input: f64) -> F {
+fn minf(mf: &F, input: f64) -> Shape {
     let f = Arc::clone(mf);
-    Arc::new(move |x: f64| -> f64 { input.min((f)(x)) })
+
+    Shape {
+        function: Arc::new(move |x: f64| -> f64 { input.min((f)(x)) }),
+        name: None,
+        parameters: None
+    }
 }
 
-fn std_unionf(mf1: &F, mf2: &F) -> F {
+fn std_unionf(mf1: &F, mf2: &F) -> Shape {
     let f1 = Arc::clone(mf1);
     let f2 = Arc::clone(mf2);
-    Arc::new(move |x: f64| -> f64 { (f1)(x).max((f2)(x)) })
+
+    Shape {
+        function: Arc::new(move |x: f64| -> f64 { (f1)(x).max((f2)(x)) }),
+        name: None,
+        parameters: None
+    }
 }
 
-fn std_intersectf(mf1: &F, mf2: &F) -> F {
+fn std_intersectf(mf1: &F, mf2: &F) -> Shape {
     let f1 = Arc::clone(mf1);
     let f2 = Arc::clone(mf2);
-    Arc::new(move |x: f64| -> f64 { (f1)(x).min((f2)(x)) })
+
+    Shape {
+        function: Arc::new(move |x: f64| -> f64 { (f1)(x).min((f2)(x)) }),
+        name: None,
+        parameters: None
+    }
 }
 
 #[derive(Clone)]
 pub struct FuzzySet {
     pub universe: (f64, f64), // a range
-    pub membership_f: F,      // a function
+    pub membership_f: Shape  
 }
 
 impl FuzzySet {
-    pub fn new(universe: (f64, f64), fuzzy_f: F) -> Self {
+    pub fn new(universe: (f64, f64), fuzzy_f: Shape) -> Self {
         if universe.1 < universe.0 {
             panic!("universe end can not be less than start");
         }
@@ -45,7 +60,7 @@ impl FuzzySet {
     /// Return the degree of membership of the input value in the FuzzySet.
     pub fn degree_of(&self, input: f64) -> f64 {
         if input >= self.universe.0 && input <= self.universe.1 {
-            (self.membership_f)(input).min(1f64).max(0f64)
+            (self.membership_f.function)(input).min(1f64).max(0f64)
         } else {
             0f64
         }
@@ -53,7 +68,7 @@ impl FuzzySet {
 
     /// Return a new FuzzySet with the membership function that will not exceed the input value.
     pub fn min(&self, input: f64) -> FuzzySet {
-        FuzzySet::new(self.universe, minf(&self.membership_f, input))
+        FuzzySet::new(self.universe, minf(&self.membership_f.function, input))
     }
 
     /// Return a new FuzzySet with the membership function that is the standard union (max) of the two FuzzySets.
@@ -64,7 +79,7 @@ impl FuzzySet {
         }
         Some(FuzzySet::new(
             self.universe,
-            std_unionf(&self.membership_f, &set.membership_f),
+            std_unionf(&self.membership_f.function, &set.membership_f.function),
         ))
     }
 
@@ -76,7 +91,7 @@ impl FuzzySet {
         }
         Some(FuzzySet::new(
             self.universe,
-            std_intersectf(&self.membership_f, &set.membership_f),
+            std_intersectf(&self.membership_f.function, &set.membership_f.function),
         ))
     }
 
@@ -84,7 +99,7 @@ impl FuzzySet {
         let universe = self.get_finite_universe(resolution);
         let (mf_sum, mf_weighted_sum) = universe
             .par_iter()
-            .map(|x| ((self.membership_f)(*x), (self.membership_f)(*x) * x))
+            .map(|x| ((self.membership_f.function)(*x), (self.membership_f.function)(*x) * x))
             .reduce(|| (0.0, 0.0), |acc, v| (acc.0 + v.0, acc.1 + v.1));
 
         if mf_sum == 0.0 {

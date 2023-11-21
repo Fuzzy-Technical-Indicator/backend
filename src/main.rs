@@ -1,15 +1,18 @@
 pub mod backtest;
 pub mod core;
 
+use core::update_settings;
+
 use crate::core::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached, fetch_symbol, fetch_user_ohlc,
-    fuzzy_cached, macd_cached, naranjo_macd_cached, obv_cached, rsi_cached, stoch_cached,
+    fuzzy_cached, get_settings, macd_cached, naranjo_macd_cached, obv_cached, rsi_cached,
+    stoch_cached, SettingsModel
 };
 use actix_cors::Cors;
-use actix_web::{get, middleware::Logger, web, App, HttpServer, Responder};
+use actix_web::{get, middleware::Logger, put, web, App, HttpServer, Responder};
 use env_logger::Env;
 use mongodb::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Debug, PartialEq, Clone, Hash, Eq)]
 pub enum Interval {
@@ -44,7 +47,7 @@ struct MacdQueryParams {
     smooth: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct StochQueryParams {
     k: usize,
     d: usize,
@@ -193,6 +196,16 @@ async fn fuzzy_route(db: web::Data<Client>, params: web::Query<QueryParams>) -> 
     web::Json(fuzzy_cached(&data.0, symbol, interval))
 }
 
+#[get("/settings")]
+async fn settings(db: web::Data<Client>) -> impl Responder {
+    web::Json(get_settings(db).await)
+}
+
+#[put("/settings")]
+async fn put_settings(db: web::Data<Client>, info: web::Json<SettingsModel>) -> impl Responder {
+    web::Json(update_settings(db, info).await)
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let uri = dotenvy::var("MONGO_DB_URI").unwrap();
@@ -209,14 +222,14 @@ async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(Env::default().default_filter_or("info"));
 
     HttpServer::new(move || {
-        let cors = Cors::default().allow_any_origin();
+        let cors = Cors::permissive();
 
         App::new()
             .wrap(Logger::new("%r %s %bbytes %Dms"))
             .wrap(cors)
             .app_data(web::Data::new(client.clone()))
             .service(
-                web::scope("/api/indicators") 
+                web::scope("/api/indicators")
                     .service(indicator_macd)
                     .service(indicator_bb)
                     .service(indicator_adx)
@@ -226,7 +239,13 @@ async fn main() -> std::io::Result<()> {
                     .service(indicator_stoch)
                     .service(indicator_accum_dist), //.service(indicator_naranjo_macd),
             )
-            .service(web::scope("/api").service(ohlc).service(fuzzy_route))
+            .service(
+                web::scope("/api")
+                    .service(ohlc)
+                    .service(fuzzy_route)
+                    .service(settings)
+                    .service(put_settings),
+            )
     })
     .bind((ip, port))?
     .run()

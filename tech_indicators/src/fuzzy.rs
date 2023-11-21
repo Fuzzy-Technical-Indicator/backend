@@ -25,6 +25,7 @@ pub fn fuzzy_indicator(
     // TODO: Make this faster
     let f_engine = FuzzyEngine::new()
         .add_cond(LinguisticVar::new(
+            // rsi
             vec![
                 ("low", triangle(0.0, 1.0, 30.0)),
                 ("medium", triangle(50.0, 1.0, 30.0)),
