@@ -7,7 +7,7 @@ use fuzzy_logic::{
     shape::{triangle, zero},
 };
 use mongodb::{
-    bson::{doc, to_bson, Document},
+    bson::{doc, to_bson, Bson, Document},
     options::UpdateOptions,
     Client, Collection,
 };
@@ -316,7 +316,7 @@ fn to_settings(var: &LinguisticVar) -> LinguisticVarSetting {
 pub async fn get_settings(db: web::Data<Client>) -> Settings {
     let db_client = (*db).database("StockMarket");
     let collection = db_client.collection::<SettingsModel>("settings");
-    
+
     // hard coded username
     let settings = collection
         .find_one(doc! { "username": "tanat" }, None)
@@ -378,12 +378,23 @@ pub async fn update_settings(db: web::Data<Client>, info: web::Json<SettingsMode
     let db_client = (*db).database("StockMarket");
     let collection = db_client.collection::<SettingsModel>("settings");
 
-    let data = to_bson(&info.linguistic_variables).unwrap();
+    let data = to_bson(
+        &info
+            .linguistic_variables
+            .iter()
+            .map(|(name, info)| {
+                let lv_name = format!("linguisticVariables.{}", name);
+                let lv_info = to_bson(info).unwrap();
+                (lv_name, lv_info)
+            })
+            .collect::<HashMap<String, Bson>>(),
+    )
+    .unwrap();
     let options = UpdateOptions::builder().upsert(true).build();
     let update_result = collection
         .update_one(
             doc! { "username": info.username.clone()},
-            doc! { "$set": {"linguisticVariables": data }},
+            doc! { "$set": data },
             options,
         )
         .await;
