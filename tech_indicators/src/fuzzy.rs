@@ -1,6 +1,6 @@
 use fuzzy_logic::{
     linguistic::LinguisticVar,
-    shape::{trapezoidal, triangle},
+    shape::{trapezoid, triangle},
     FuzzyEngine,
 };
 use rayon::prelude::*;
@@ -36,7 +36,7 @@ pub fn fuzzy_indicator(
         .add_cond(LinguisticVar::new(
             vec![
                 ("long", triangle(-120.0, 1.0, 30.0)),
-                ("wait", trapezoidal(-100.0, -50.0, 50.0, 100.0, 1.0)),
+                ("wait", trapezoid(-100.0, -50.0, 50.0, 100.0, 1.0)),
                 ("short", triangle(120.0, 1.0, 30.0)),
             ],
             (-150.0, 150.0),

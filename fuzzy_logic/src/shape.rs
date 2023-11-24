@@ -9,7 +9,7 @@ pub struct Shape {
     pub parameters: Option<HashMap<String, f64>>,
 }
 
-pub fn trapezoidal(a: f64, b: f64, c: f64, d: f64, e: f64) -> Shape {
+pub fn trapezoid(a: f64, b: f64, c: f64, d: f64, e: f64) -> Shape {
     Shape {
         function: Arc::new(move |x| {
             if x >= a && x < b {
@@ -21,14 +21,14 @@ pub fn trapezoidal(a: f64, b: f64, c: f64, d: f64, e: f64) -> Shape {
             }
             0.0
         }),
-        name: Some("trapezoidal".into()),
+        name: Some("trapezoid".into()),
         // need to rename this
         parameters: Some(HashMap::from([
             ("a".into(), a),
             ("b".into(), b),
             ("c".into(), c),
             ("d".into(), d),
-            ("e".into(), e),
+            ("height".into(), e),
         ])),
     }
 }

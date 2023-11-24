@@ -4,7 +4,7 @@ use chrono::{Timelike, Utc};
 use futures::stream::TryStreamExt;
 use fuzzy_logic::{
     linguistic::LinguisticVar,
-    shape::{triangle, zero},
+    shape::{triangle, zero, trapezoid},
 };
 use mongodb::{
     bson::{doc, to_bson, Bson, Document},
@@ -13,7 +13,10 @@ use mongodb::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, time::Instant};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Instant,
+};
 use tech_indicators::{
     accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, naranjo_macd, obv, rsi, stoch,
     DTValue, Ohlc,
@@ -289,7 +292,7 @@ pub struct LinguisticVarSetting {
 #[derive(Deserialize, Serialize)]
 pub struct Settings {
     #[serde(rename(serialize = "linguisticVariables", deserialize = "linguisticVariables"))]
-    linguistic_variables: HashMap<String, LinguisticVarSetting>,
+    linguistic_variables: BTreeMap<String, LinguisticVarSetting>,
 }
 
 fn to_settings(var: &LinguisticVar) -> LinguisticVarSetting {
@@ -323,28 +326,38 @@ pub async fn get_settings(db: web::Data<Client>) -> Settings {
         .await
         .unwrap()
         .unwrap();
-    let mut linguistic_variables = HashMap::new();
 
-    for (k, v) in settings.linguistic_variables.iter() {
-        let var = LinguisticVar::new(
-            v.shapes
-                .iter()
-                .map(|(name, shape_info)| {
-                    let f = match shape_info.shape_type.as_str() {
-                        "triangle" => triangle(
-                            *shape_info.parameters.get("center").unwrap(),
-                            *shape_info.parameters.get("height").unwrap(),
-                            *shape_info.parameters.get("width").unwrap(),
-                        ),
-                        _ => zero(),
-                    };
-                    return (name.as_str(), f);
-                })
-                .collect(),
-            (v.lower_boundary, v.upper_boundary),
-        );
-        linguistic_variables.insert(k.to_string(), to_settings(&var));
-    }
+    let linguistic_variables = settings
+        .linguistic_variables
+        .iter()
+        .map(|(k, v)| {
+            let var = LinguisticVar::new(
+                v.shapes
+                    .iter()
+                    .map(|(name, shape_info)| {
+                        let f = match shape_info.shape_type.as_str() {
+                            "triangle" => triangle(
+                                *shape_info.parameters.get("center").unwrap(),
+                                *shape_info.parameters.get("height").unwrap(),
+                                *shape_info.parameters.get("width").unwrap(),
+                            ),
+                            "trapezoid" => trapezoid(
+                                *shape_info.parameters.get("a").unwrap(),
+                                *shape_info.parameters.get("b").unwrap(),
+                                *shape_info.parameters.get("c").unwrap(),
+                                *shape_info.parameters.get("d").unwrap(),
+                                *shape_info.parameters.get("height").unwrap(),
+                            ),
+                            _ => zero(),
+                        };
+                        return (name.as_str(), f);
+                    })
+                    .collect(),
+                (v.lower_boundary, v.upper_boundary),
+            );
+            (k.to_string(), to_settings(&var))
+        })
+        .collect::<BTreeMap<String, LinguisticVarSetting>>();
 
     Settings {
         linguistic_variables,
