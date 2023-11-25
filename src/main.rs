@@ -5,7 +5,7 @@ use core::update_settings;
 
 use crate::core::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached, fetch_symbol, fetch_user_ohlc,
-    fuzzy_cached, get_settings, macd_cached, naranjo_macd_cached, obv_cached, rsi_cached,
+    fuzzy_cached, get_settings, macd_cached, obv_cached, rsi_cached,
     stoch_cached, SettingsModel
 };
 use actix_cors::Cors;

@@ -1,44 +1,32 @@
 use rayon::prelude::*;
 use std::sync::Arc;
 
-use crate::{arange, F, shape::Shape};
+use crate::{arange, shape::Shape, F};
 
 fn minf(mf: &F, input: f64) -> Shape {
     let f = Arc::clone(mf);
 
-    Shape {
-        function: Arc::new(move |x: f64| -> f64 { input.min((f)(x)) }),
-        name: None,
-        parameters: None
-    }
+    Shape::default_with(Arc::new(move |x: f64| -> f64 { input.min((f)(x)) }))
 }
 
 fn std_unionf(mf1: &F, mf2: &F) -> Shape {
     let f1 = Arc::clone(mf1);
     let f2 = Arc::clone(mf2);
 
-    Shape {
-        function: Arc::new(move |x: f64| -> f64 { (f1)(x).max((f2)(x)) }),
-        name: None,
-        parameters: None
-    }
+    Shape::default_with(Arc::new(move |x: f64| -> f64 { (f1)(x).max((f2)(x)) }))
 }
 
 fn std_intersectf(mf1: &F, mf2: &F) -> Shape {
     let f1 = Arc::clone(mf1);
     let f2 = Arc::clone(mf2);
 
-    Shape {
-        function: Arc::new(move |x: f64| -> f64 { (f1)(x).min((f2)(x)) }),
-        name: None,
-        parameters: None
-    }
+    Shape::default_with(Arc::new(move |x: f64| -> f64 { (f1)(x).min((f2)(x)) }))
 }
 
 #[derive(Clone)]
 pub struct FuzzySet {
     pub universe: (f64, f64), // a range
-    pub membership_f: Shape  
+    pub membership_f: Shape,
 }
 
 impl FuzzySet {
@@ -99,7 +87,12 @@ impl FuzzySet {
         let universe = self.get_finite_universe(resolution);
         let (mf_sum, mf_weighted_sum) = universe
             .par_iter()
-            .map(|x| ((self.membership_f.function)(*x), (self.membership_f.function)(*x) * x))
+            .map(|x| {
+                (
+                    (self.membership_f.function)(*x),
+                    (self.membership_f.function)(*x) * x,
+                )
+            })
             .reduce(|| (0.0, 0.0), |acc, v| (acc.0 + v.0, acc.1 + v.1));
 
         if mf_sum == 0.0 {

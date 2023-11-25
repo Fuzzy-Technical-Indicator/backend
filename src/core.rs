@@ -4,7 +4,7 @@ use chrono::{Timelike, Utc};
 use futures::stream::TryStreamExt;
 use fuzzy_logic::{
     linguistic::LinguisticVar,
-    shape::{triangle, zero, trapezoid},
+    shape::{trapezoid, triangle, zero},
 };
 use mongodb::{
     bson::{doc, to_bson, Bson, Document},
@@ -281,7 +281,6 @@ pub fn naranjo_macd_cached(
 
 #[derive(Deserialize, Serialize)]
 pub struct LinguisticVarSetting {
-    labels: Vec<f64>,
     #[serde(rename(serialize = "upperBoundary", deserialize = "upperBoundary"))]
     upper_boundary: f64,
     #[serde(rename(serialize = "lowerBoundary", deserialize = "lowerBoundary"))]
@@ -296,20 +295,18 @@ pub struct Settings {
 }
 
 fn to_settings(var: &LinguisticVar) -> LinguisticVarSetting {
-    let xs = var.get_finite_universe(1.0);
     let mut ys = HashMap::new();
     for (name, set) in var.sets.iter() {
         let data = json!({
             "type": set.membership_f.name,
             "parameters": set.membership_f.parameters,
-            "data": xs.iter().map(|x| set.degree_of(*x)).collect::<Vec<f64>>(),
+            "latex": set.membership_f.latex
         });
 
         ys.insert(name.to_string(), data);
     }
 
     LinguisticVarSetting {
-        labels: xs,
         graphs: ys,
         lower_boundary: var.universe.0,
         upper_boundary: var.universe.1,
