@@ -1,7 +1,3 @@
-
-
-
-
 pub enum PosType {
     Long,
     Short,

@@ -1,13 +1,13 @@
 pub mod backtest;
 pub mod core;
 
-use core::update_settings;
-
-use crate::core::{
+use core::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached, fetch_symbol, fetch_user_ohlc,
-    fuzzy_cached, get_settings, macd_cached, obv_cached, rsi_cached,
-    stoch_cached, SettingsModel
+    fuzzy_cached, macd_cached, obv_cached, rsi_cached, stoch_cached,
 };
+
+use core::settings::{get_settings, update_settings, SettingsModel};
+
 use actix_cors::Cors;
 use actix_web::{get, middleware::Logger, put, web, App, HttpServer, Responder};
 use env_logger::Env;

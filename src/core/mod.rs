@@ -1,22 +1,16 @@
+pub mod settings;
+
 use actix_web::web;
 use cached::proc_macro::cached;
 use chrono::{Timelike, Utc};
 use futures::stream::TryStreamExt;
-use fuzzy_logic::{
-    linguistic::LinguisticVar,
-    shape::{trapezoid, triangle, zero},
-};
+
 use mongodb::{
-    bson::{doc, to_bson, Bson, Document},
-    options::UpdateOptions,
+    bson::{doc, Document},
     Client, Collection,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::{
-    collections::{BTreeMap, HashMap},
-    time::Instant,
-};
+use std::time::Instant;
 use tech_indicators::{
     accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, naranjo_macd, obv, rsi, stoch,
     DTValue, Ohlc,
@@ -277,140 +271,4 @@ pub fn naranjo_macd_cached(
     _interval: &Option<Interval>,
 ) -> Vec<DTValue<f64>> {
     naranjo_macd(data)
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct LinguisticVarSetting {
-    #[serde(rename(serialize = "upperBoundary", deserialize = "upperBoundary"))]
-    upper_boundary: f64,
-    #[serde(rename(serialize = "lowerBoundary", deserialize = "lowerBoundary"))]
-    lower_boundary: f64,
-    graphs: HashMap<String, Value>,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct Settings {
-    #[serde(rename(serialize = "linguisticVariables", deserialize = "linguisticVariables"))]
-    linguistic_variables: BTreeMap<String, LinguisticVarSetting>,
-}
-
-fn to_settings(var: &LinguisticVar) -> LinguisticVarSetting {
-    let mut ys = HashMap::new();
-    for (name, set) in var.sets.iter() {
-        let data = json!({
-            "type": set.membership_f.name,
-            "parameters": set.membership_f.parameters,
-            "latex": set.membership_f.latex
-        });
-
-        ys.insert(name.to_string(), data);
-    }
-
-    LinguisticVarSetting {
-        graphs: ys,
-        lower_boundary: var.universe.0,
-        upper_boundary: var.universe.1,
-    }
-}
-
-pub async fn get_settings(db: web::Data<Client>) -> Settings {
-    let db_client = (*db).database("StockMarket");
-    let collection = db_client.collection::<SettingsModel>("settings");
-
-    // hard coded username
-    let settings = collection
-        .find_one(doc! { "username": "tanat" }, None)
-        .await
-        .unwrap()
-        .unwrap();
-
-    let linguistic_variables = settings
-        .linguistic_variables
-        .iter()
-        .map(|(k, v)| {
-            let var = LinguisticVar::new(
-                v.shapes
-                    .iter()
-                    .map(|(name, shape_info)| {
-                        let f = match shape_info.shape_type.as_str() {
-                            "triangle" => triangle(
-                                *shape_info.parameters.get("center").unwrap(),
-                                *shape_info.parameters.get("height").unwrap(),
-                                *shape_info.parameters.get("width").unwrap(),
-                            ),
-                            "trapezoid" => trapezoid(
-                                *shape_info.parameters.get("a").unwrap(),
-                                *shape_info.parameters.get("b").unwrap(),
-                                *shape_info.parameters.get("c").unwrap(),
-                                *shape_info.parameters.get("d").unwrap(),
-                                *shape_info.parameters.get("height").unwrap(),
-                            ),
-                            _ => zero(),
-                        };
-                        return (name.as_str(), f);
-                    })
-                    .collect(),
-                (v.lower_boundary, v.upper_boundary),
-            );
-            (k.to_string(), to_settings(&var))
-        })
-        .collect::<BTreeMap<String, LinguisticVarSetting>>();
-
-    Settings {
-        linguistic_variables,
-    }
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-pub struct LinguisticVarShapeInfo {
-    parameters: HashMap<String, f64>,
-    #[serde(rename(serialize = "shapeType", deserialize = "shapeType"))]
-    shape_type: String,
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-pub struct LinguisticVarInfo {
-    #[serde(rename(serialize = "upperBoundary", deserialize = "upperBoundary"))]
-    upper_boundary: f64,
-    #[serde(rename(serialize = "lowerBoundary", deserialize = "lowerBoundary"))]
-    lower_boundary: f64,
-    shapes: HashMap<String, LinguisticVarShapeInfo>,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct SettingsModel {
-    username: String,
-    #[serde(rename(serialize = "linguisticVariables", deserialize = "linguisticVariables"))]
-    linguistic_variables: HashMap<String, LinguisticVarInfo>,
-}
-
-pub async fn update_settings(db: web::Data<Client>, info: web::Json<SettingsModel>) -> String {
-    let db_client = (*db).database("StockMarket");
-    let collection = db_client.collection::<SettingsModel>("settings");
-
-    let data = to_bson(
-        &info
-            .linguistic_variables
-            .iter()
-            .map(|(name, info)| {
-                let lv_name = format!("linguisticVariables.{}", name);
-                let lv_info = to_bson(info).unwrap();
-                (lv_name, lv_info)
-            })
-            .collect::<HashMap<String, Bson>>(),
-    )
-    .unwrap();
-    let options = UpdateOptions::builder().upsert(true).build();
-    let update_result = collection
-        .update_one(
-            doc! { "username": info.username.clone()},
-            doc! { "$set": data },
-            options,
-        )
-        .await;
-
-    match update_result {
-        Ok(res) => format!("{:?}", res),
-        Err(err) => format!("{:?}", err),
-    }
 }
