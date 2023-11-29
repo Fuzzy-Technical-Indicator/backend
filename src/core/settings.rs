@@ -12,6 +12,14 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
+#[derive(Deserialize, Serialize, Clone)]
+pub enum LinguisticVarKind {
+    #[serde(rename(serialize = "input", deserialize = "input"))]
+    Input,
+    #[serde(rename(serialize = "output", deserialize = "output"))]
+    Output,
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct ShapeDTO {
     #[serde(rename(serialize = "type", deserialize = "type"))]
@@ -27,6 +35,7 @@ pub struct LinguisticVarDTO {
     #[serde(rename(serialize = "lowerBoundary", deserialize = "lowerBoundary"))]
     lower_boundary: f64,
     shapes: BTreeMap<String, ShapeDTO>,
+    kind: LinguisticVarKind,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -49,6 +58,7 @@ pub struct LinguisticVarModel {
     #[serde(rename(serialize = "lowerBoundary", deserialize = "lowerBoundary"))]
     lower_boundary: f64,
     shapes: BTreeMap<String, ShapeModel>,
+    kind: LinguisticVarKind,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -58,13 +68,13 @@ pub struct SettingsModel {
     linguistic_variables: BTreeMap<String, LinguisticVarModel>,
 }
 
-fn to_settings(var: &LinguisticVar) -> LinguisticVarDTO {
+fn to_settings(var: &LinguisticVar, kind: &LinguisticVarKind) -> LinguisticVarDTO {
     let mut shapes = BTreeMap::new();
     for (name, set) in var.sets.iter() {
         let data = ShapeDTO {
             shape_type: set.membership_f.name.clone(),
             parameters: set.membership_f.parameters.clone(),
-            latex: set.membership_f.latex.clone()
+            latex: set.membership_f.latex.clone(),
         };
         shapes.insert(name.to_string(), data);
     }
@@ -73,6 +83,7 @@ fn to_settings(var: &LinguisticVar) -> LinguisticVarDTO {
         shapes,
         lower_boundary: var.universe.0,
         upper_boundary: var.universe.1,
+        kind: kind.clone(),
     }
 }
 
@@ -90,9 +101,10 @@ pub async fn get_settings(db: web::Data<Client>) -> SettingsDTO {
     let linguistic_variables = settings
         .linguistic_variables
         .iter()
-        .map(|(k, v)| {
+        .map(|(name, var_info)| {
             let var = LinguisticVar::new(
-                v.shapes
+                var_info
+                    .shapes
                     .iter()
                     .map(|(name, shape_info)| {
                         let parameters = &shape_info.parameters;
@@ -114,9 +126,9 @@ pub async fn get_settings(db: web::Data<Client>) -> SettingsDTO {
                         return (name.as_str(), f);
                     })
                     .collect(),
-                (v.lower_boundary, v.upper_boundary),
+                (var_info.lower_boundary, var_info.upper_boundary),
             );
-            (k.to_string(), to_settings(&var))
+            (name.to_string(), to_settings(&var, &var_info.kind))
         })
         .collect::<BTreeMap<String, LinguisticVarDTO>>();
 
@@ -133,9 +145,9 @@ pub async fn update_settings(db: web::Data<Client>, info: web::Json<SettingsMode
         &info
             .linguistic_variables
             .iter()
-            .map(|(name, info)| {
+            .map(|(name, var)| {
                 let lv_name = format!("linguisticVariables.{}", name);
-                let lv_info = to_bson(info).unwrap();
+                let lv_info = to_bson(var).unwrap();
                 (lv_name, lv_info)
             })
             .collect::<HashMap<String, Bson>>(),
@@ -151,6 +163,29 @@ pub async fn update_settings(db: web::Data<Client>, info: web::Json<SettingsMode
         .await;
 
     match update_result {
+        Ok(res) => format!("{:?}", res),
+        Err(err) => format!("{:?}", err),
+    }
+}
+
+pub async fn dalete_linguistic_var(db: web::Data<Client>, name: String) -> String {
+    let db_client = (*db).database("StockMarket");
+    let collection = db_client.collection::<SettingsModel>("settings");
+
+    let target = doc! {
+        format!("linguisticVariables.{}", name): ""
+    };
+
+    // still hard coded username
+    let result = collection
+        .update_one(
+            doc! { "username": "tanat" },
+            doc! { "$unset": target },
+            None,
+        )
+        .await;
+
+    match result {
         Ok(res) => format!("{:?}", res),
         Err(err) => format!("{:?}", err),
     }
