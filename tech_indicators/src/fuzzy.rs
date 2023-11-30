@@ -62,7 +62,7 @@ pub fn fuzzy_indicator(
         .add_rule(
             vec![Some("high"), Some("long")],
             vec![Some("weak"), Some("weak")],
-        )
+        ) 
         .add_rule(
             vec![Some("high"), Some("wait")],
             vec![Some("weak"), Some("strong")],

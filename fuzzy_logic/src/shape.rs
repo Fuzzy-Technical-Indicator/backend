@@ -50,7 +50,7 @@ pub fn trapezoid(a: f64, b: f64, c: f64, d: f64, h: f64) -> Shape {
             ),
             format!(r"y = \left\{{ {} \le x \le {} : {} \right\}}", b, c, h),
             format!(
-                r"y = \left\{{ {} \le x \le {} : 1 - \frac{{ \left|x - {}\right| }} {{{} - {}}} \cdot {} \right\}}",
+                r"y = \left\{{ {} \le x \le {} : \left(1 - \frac{{ \left|x - {}\right| }} {{{} - {}}}\right) \cdot {} \right\}}",
                 c, d, c, d, c, h
             ),
         ]),

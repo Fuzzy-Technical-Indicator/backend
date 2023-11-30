@@ -3,13 +3,13 @@ pub mod core;
 
 use core::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached, fetch_symbol, fetch_user_ohlc,
-    fuzzy_cached, macd_cached, obv_cached, rsi_cached, stoch_cached,
+    fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings, stoch_cached,
 };
 
-use core::settings::{get_settings, update_settings, SettingsModel};
+use core::settings::{update_settings, SettingsModel};
 
 use actix_cors::Cors;
-use actix_web::{get, middleware::Logger, put, web, App, HttpServer, Responder};
+use actix_web::{delete, get, middleware::Logger, put, web, App, HttpServer, Responder};
 use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
@@ -197,13 +197,19 @@ async fn fuzzy_route(db: web::Data<Client>, params: web::Query<QueryParams>) -> 
 }
 
 #[get("/settings")]
-async fn settings(db: web::Data<Client>) -> impl Responder {
-    web::Json(get_settings(db).await)
+async fn get_settings(db: web::Data<Client>) -> impl Responder {
+    web::Json(settings::get_settings(db).await)
 }
 
 #[put("/settings")]
 async fn put_settings(db: web::Data<Client>, info: web::Json<SettingsModel>) -> impl Responder {
     web::Json(update_settings(db, info).await)
+}
+
+#[delete("/settings/linguisticvar/{name}")]
+async fn delete_linguistic_var(db: web::Data<Client>, path: web::Path<String>) -> String {
+    let name = path.into_inner();
+    settings::dalete_linguistic_var(db, name).await
 }
 
 #[actix_web::main]
@@ -243,8 +249,9 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api")
                     .service(ohlc)
                     .service(fuzzy_route)
-                    .service(settings)
-                    .service(put_settings),
+                    .service(get_settings)
+                    .service(put_settings)
+                    .service(delete_linguistic_var),
             )
     })
     .bind((ip, port))?
