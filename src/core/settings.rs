@@ -1,16 +1,16 @@
+#![allow(non_snake_case)]
 use actix_web::web;
-
+use futures::{StreamExt, TryStreamExt};
 use fuzzy_logic::{
     linguistic::LinguisticVar,
     shape::{trapezoid, triangle, zero},
 };
 use mongodb::{
-    bson::{doc, to_bson, Bson},
-    options::UpdateOptions,
-    Client,
+    bson::{doc, serde_helpers::deserialize_hex_string_from_object_id, to_bson, Bson},
+    Client, Database,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 #[derive(Deserialize, Serialize, Clone)]
 pub enum LinguisticVarKind {
@@ -22,58 +22,91 @@ pub enum LinguisticVarKind {
 
 #[derive(Deserialize, Serialize)]
 pub struct ShapeDTO {
-    #[serde(rename(serialize = "type", deserialize = "type"))]
-    shape_type: Option<String>,
-    parameters: Option<HashMap<String, f64>>,
+    shapeType: Option<String>,
+    parameters: Option<BTreeMap<String, f64>>,
     latex: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct LinguisticVarDTO {
-    #[serde(rename(serialize = "upperBoundary", deserialize = "upperBoundary"))]
-    upper_boundary: f64,
-    #[serde(rename(serialize = "lowerBoundary", deserialize = "lowerBoundary"))]
-    lower_boundary: f64,
+    upperBoundary: f64,
+    lowerBoundary: f64,
     shapes: BTreeMap<String, ShapeDTO>,
     kind: LinguisticVarKind,
 }
 
 #[derive(Deserialize, Serialize)]
+pub struct FuzzyRuleDTO {
+    _id: String,
+    input: FuzzyRuleData,
+    output: FuzzyRuleData,
+    valid: bool,
+}
+
+#[derive(Deserialize, Serialize)]
 pub struct SettingsDTO {
-    #[serde(rename(serialize = "linguisticVariables", deserialize = "linguisticVariables"))]
-    linguistic_variables: BTreeMap<String, LinguisticVarDTO>,
+    linguisticVariables: BTreeMap<String, LinguisticVarDTO>,
+    fuzzyRules: Vec<FuzzyRuleDTO>,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ShapeModel {
     parameters: BTreeMap<String, f64>,
-    #[serde(rename(serialize = "shapeType", deserialize = "shapeType"))]
-    shape_type: String,
+    shapeType: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct LinguisticVarModel {
-    #[serde(rename(serialize = "upperBoundary", deserialize = "upperBoundary"))]
-    upper_boundary: f64,
-    #[serde(rename(serialize = "lowerBoundary", deserialize = "lowerBoundary"))]
-    lower_boundary: f64,
+    upperBoundary: f64,
+    lowerBoundary: f64,
     shapes: BTreeMap<String, ShapeModel>,
     kind: LinguisticVarKind,
 }
 
+pub type FuzzyRuleData = BTreeMap<String, Option<String>>;
+
+#[derive(Deserialize, Serialize)]
+pub struct NewFuzzyRule {
+    input: FuzzyRuleData,
+    output: FuzzyRuleData,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct FuzzyRuleModel {
+    #[serde(deserialize_with = "deserialize_hex_string_from_object_id")]
+    _id: String,
+    input: FuzzyRuleData,
+    output: FuzzyRuleData,
+    username: String,
+    valid: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct FuzzyRuleModelWithOutId {
+    input: FuzzyRuleData,
+    output: FuzzyRuleData,
+    username: String,
+    valid: bool,
+}
+
+pub type LinguisticVarsModel = BTreeMap<String, LinguisticVarModel>;
+
 #[derive(Deserialize, Serialize)]
 pub struct SettingsModel {
     username: String,
-    #[serde(rename(serialize = "linguisticVariables", deserialize = "linguisticVariables"))]
-    linguistic_variables: BTreeMap<String, LinguisticVarModel>,
+    linguisticVariables: LinguisticVarsModel,
 }
 
-fn to_settings(var: &LinguisticVar, kind: &LinguisticVarKind) -> LinguisticVarDTO {
+fn to_dto(var: &LinguisticVar, kind: &LinguisticVarKind) -> LinguisticVarDTO {
     let mut shapes = BTreeMap::new();
     for (name, set) in var.sets.iter() {
         let data = ShapeDTO {
-            shape_type: set.membership_f.name.clone(),
-            parameters: set.membership_f.parameters.clone(),
+            shapeType: set.membership_f.name.clone(),
+            parameters: set
+                .membership_f
+                .parameters
+                .as_ref()
+                .map(|x| x.to_owned().into_iter().collect()),
             latex: set.membership_f.latex.clone(),
         };
         shapes.insert(name.to_string(), data);
@@ -81,10 +114,29 @@ fn to_settings(var: &LinguisticVar, kind: &LinguisticVarKind) -> LinguisticVarDT
 
     LinguisticVarDTO {
         shapes,
-        lower_boundary: var.universe.0,
-        upper_boundary: var.universe.1,
+        lowerBoundary: var.universe.0,
+        upperBoundary: var.universe.1,
         kind: kind.clone(),
     }
+}
+
+async fn get_fuzzy_rules(db_client: &Database) -> Vec<FuzzyRuleDTO> {
+    let collection = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
+
+    let fuzzyRules = collection
+        .find(doc! { "username": "tanat" }, None)
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+
+    fuzzyRules.into_iter().map(|item| FuzzyRuleDTO {
+        _id: item._id.to_string(),
+        input: item.input,
+        output: item.output,
+        valid: item.valid,
+    }).collect()
 }
 
 pub async fn get_settings(db: web::Data<Client>) -> SettingsDTO {
@@ -99,7 +151,7 @@ pub async fn get_settings(db: web::Data<Client>) -> SettingsDTO {
         .unwrap();
 
     let linguistic_variables = settings
-        .linguistic_variables
+        .linguisticVariables
         .iter()
         .map(|(name, var_info)| {
             let var = LinguisticVar::new(
@@ -108,7 +160,7 @@ pub async fn get_settings(db: web::Data<Client>) -> SettingsDTO {
                     .iter()
                     .map(|(name, shape_info)| {
                         let parameters = &shape_info.parameters;
-                        let f = match shape_info.shape_type.as_str() {
+                        let f = match shape_info.shapeType.as_str() {
                             "triangle" => triangle(
                                 *parameters.get("center").unwrap(),
                                 *parameters.get("height").unwrap(),
@@ -126,40 +178,40 @@ pub async fn get_settings(db: web::Data<Client>) -> SettingsDTO {
                         return (name.as_str(), f);
                     })
                     .collect(),
-                (var_info.lower_boundary, var_info.upper_boundary),
+                (var_info.lowerBoundary, var_info.upperBoundary),
             );
-            (name.to_string(), to_settings(&var, &var_info.kind))
+            (name.to_string(), to_dto(&var, &var_info.kind))
         })
         .collect::<BTreeMap<String, LinguisticVarDTO>>();
 
     SettingsDTO {
-        linguistic_variables,
+        linguisticVariables: linguistic_variables,
+        fuzzyRules: get_fuzzy_rules(&db_client).await,
     }
 }
-
-pub async fn update_settings(db: web::Data<Client>, info: web::Json<SettingsModel>) -> String {
+/*
+* When this is updated, what should happend with the linguistic variables?
+*/
+pub async fn update_linguistic_vars(
+    db: web::Data<Client>,
+    linguisticVariables: web::Json<LinguisticVarsModel>,
+) -> String {
     let db_client = (*db).database("StockMarket");
     let collection = db_client.collection::<SettingsModel>("settings");
 
     let data = to_bson(
-        &info
-            .linguistic_variables
+        &linguisticVariables
             .iter()
             .map(|(name, var)| {
                 let lv_name = format!("linguisticVariables.{}", name);
                 let lv_info = to_bson(var).unwrap();
                 (lv_name, lv_info)
             })
-            .collect::<HashMap<String, Bson>>(),
+            .collect::<BTreeMap<String, Bson>>(),
     )
     .unwrap();
-    let options = UpdateOptions::builder().upsert(true).build();
     let update_result = collection
-        .update_one(
-            doc! { "username": info.username.clone()},
-            doc! { "$set": data },
-            options,
-        )
+        .update_one(doc! { "username": "tanat"}, doc! { "$set": data }, None)
         .await;
 
     match update_result {
@@ -184,6 +236,49 @@ pub async fn dalete_linguistic_var(db: web::Data<Client>, name: String) -> Strin
             None,
         )
         .await;
+
+    match result {
+        Ok(res) => format!("{:?}", res),
+        Err(err) => format!("{:?}", err),
+    }
+}
+
+pub async fn add_fuzzy_rule(db: web::Data<Client>, rule: web::Json<NewFuzzyRule>) -> String {
+    let db_client = (*db).database("StockMarket");
+    let setting_coll = db_client.collection::<SettingsModel>("settings");
+
+    let doc_opt = setting_coll
+        .find_one(doc! { "username": "tanat" }, None)
+        .await
+        .unwrap();
+
+    match doc_opt {
+        Some(doc) => {
+            for (k, v) in rule.input.iter().chain(rule.output.iter()) {
+                if let Some(var) = doc.linguisticVariables.get(k) {
+                    if let Some(set) = v {
+                        if !var.shapes.contains_key(set) {
+                            return format!(
+                                "This linguistic variable set \"{}\" does not exist",
+                                set
+                            );
+                        }
+                    }
+                } else {
+                    return format!("This linguistic variable \"{}\" does not exist", k);
+                }
+            }
+        }
+        None => return "Settings not found".to_string(),
+    }
+    let collection = db_client.collection::<FuzzyRuleModelWithOutId>("fuzzy-rules");
+    let data = FuzzyRuleModelWithOutId {
+        input: rule.input.clone(),
+        output: rule.output.clone(),
+        username: "tanat".to_string(),
+        valid: true,
+    };
+    let result = collection.insert_one(data, None).await;
 
     match result {
         Ok(res) => format!("{:?}", res),
