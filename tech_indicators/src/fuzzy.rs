@@ -18,6 +18,26 @@ fn bb_percent(price: f64, v: (f64, f64, f64)) -> f64 {
 }
 
 pub fn fuzzy_indicator(
+    fuzzy_engine: &FuzzyEngine,
+    inputs: Vec<(i64, Vec<Option<f64>>)>,
+) -> Vec<DTValue<Vec<f64>>> {
+    inputs
+        .into_iter()
+        .map(|data| {
+            let res = fuzzy_engine.inference(data.1).unwrap();
+            DTValue {
+                time: data.0,
+                value: res
+                    .iter()
+                    .map(|x| x.centroid_defuzz(0.1))
+                    .collect::<Vec<f64>>(),
+            }
+        })
+        .collect()
+}
+
+/// Deprecated
+fn fuzzy_indicator_old(
     rsi: Vec<DTValue<f64>>,
     bb: Vec<DTValue<(f64, f64, f64)>>,
     price: Vec<f64>,
@@ -62,7 +82,7 @@ pub fn fuzzy_indicator(
         .add_rule(
             vec![Some("high"), Some("long")],
             vec![Some("weak"), Some("weak")],
-        ) 
+        ) // rule in database is [(rsi, high), (bb, long)] => [(long, weak), (short, weak)]
         .add_rule(
             vec![Some("high"), Some("wait")],
             vec![Some("weak"), Some("strong")],
@@ -95,7 +115,6 @@ pub fn fuzzy_indicator(
             vec![Some("low"), Some("short")],
             vec![Some("weak"), Some("weak")],
         );
-
     rsi.par_iter()
         .zip(bb.par_iter())
         .zip(price.par_iter())

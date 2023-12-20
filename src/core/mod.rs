@@ -105,7 +105,7 @@ async fn aggr_fetch(collection: &Collection<Ohlc>, interval: &Option<Interval>) 
     convert = r#"{ format!("{}{:?}{:?}", symbol, interval, cachable_dt()) }"#
 )]
 pub async fn fetch_symbol(
-    db: web::Data<Client>,
+    db: &web::Data<Client>,
     symbol: &str,
     interval: &Option<Interval>,
 ) -> (Vec<Ohlc>, String) {
@@ -136,7 +136,7 @@ pub async fn fetch_user_ohlc(
     symbol: &str,
     interval: &Option<Interval>,
 ) -> Vec<UserOhlc> {
-    let (fetch_result, _) = fetch_symbol(db, symbol, interval).await;
+    let (fetch_result, _) = fetch_symbol(&db, symbol, interval).await;
     fetch_result
         .iter()
         .map(|x| UserOhlc {
@@ -156,11 +156,13 @@ pub async fn fetch_user_ohlc(
     key = "String",
     convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
 )]
-pub fn fuzzy_cached(
-    data: &[Ohlc],
+pub async fn fuzzy_cached(
+    db: web::Data<Client>,
+    data: (Vec<Ohlc>, String),
     _symbol: &str,
     _interval: &Option<Interval>,
 ) -> Vec<DTValue<Vec<f64>>> {
+    /*
     if DEBUG {
         let rsi_v = measure_time(|| rsi(data, 14), "rsi");
         let bb_v = measure_time(|| bb(data, 20, 2.0), "bb");
@@ -168,11 +170,11 @@ pub fn fuzzy_cached(
         let result = measure_time(|| fuzzy_indicator(rsi_v, bb_v, price), "fuzzy");
         return measure_time(|| result, "_");
     }
+    */
 
-    let rsi_v = rsi(data, 14);
-    let bb_v = bb(data, 20, 2.0);
-    let price = data.iter().map(|x| x.close).collect();
-    fuzzy_indicator(rsi_v, bb_v, price)
+    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data).await.unwrap();
+
+    fuzzy_indicator(&fuzzy_engine, inputs)
 }
 
 #[cached(

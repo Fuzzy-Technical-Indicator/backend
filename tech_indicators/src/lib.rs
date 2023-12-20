@@ -37,8 +37,8 @@ pub trait OhlcSliceOps {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Hash)]
 pub struct DTValue<T> {
-    time: i64,
-    value: T,
+    pub time: i64,
+    pub value: T,
 }
 
 impl OhlcSliceOps for [Ohlc] {

@@ -4,13 +4,17 @@ use futures::{StreamExt, TryStreamExt};
 use fuzzy_logic::{
     linguistic::LinguisticVar,
     shape::{trapezoid, triangle, zero},
+    FuzzyEngine,
 };
 use mongodb::{
-    bson::{doc, serde_helpers::deserialize_hex_string_from_object_id, to_bson, Bson},
+    bson::{doc, oid, serde_helpers::deserialize_hex_string_from_object_id, to_bson, Bson},
     Client, Database,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, error::Error, str::FromStr};
+use tech_indicators::Ohlc;
+
+use super::{bb_cached, rsi_cached};
 
 #[derive(Deserialize, Serialize, Clone)]
 pub enum LinguisticVarKind {
@@ -37,7 +41,7 @@ pub struct LinguisticVarDTO {
 
 #[derive(Deserialize, Serialize)]
 pub struct FuzzyRuleDTO {
-    _id: String,
+    id: String,
     input: FuzzyRuleData,
     output: FuzzyRuleData,
     valid: bool,
@@ -61,6 +65,36 @@ pub struct LinguisticVarModel {
     lowerBoundary: f64,
     shapes: BTreeMap<String, ShapeModel>,
     kind: LinguisticVarKind,
+}
+
+impl LinguisticVarModel {
+    pub fn to_real(&self) -> LinguisticVar {
+        LinguisticVar::new(
+            self.shapes
+                .iter()
+                .map(|(name, shape_info)| {
+                    let parameters = &shape_info.parameters;
+                    let f = match shape_info.shapeType.as_str() {
+                        "triangle" => triangle(
+                            *parameters.get("center").unwrap(),
+                            *parameters.get("height").unwrap(),
+                            *parameters.get("width").unwrap(),
+                        ),
+                        "trapezoid" => trapezoid(
+                            *parameters.get("a").unwrap(),
+                            *parameters.get("b").unwrap(),
+                            *parameters.get("c").unwrap(),
+                            *parameters.get("d").unwrap(),
+                            *parameters.get("height").unwrap(),
+                        ),
+                        _ => zero(),
+                    };
+                    return (name.as_str(), f);
+                })
+                .collect(),
+            (self.lowerBoundary, self.upperBoundary),
+        )
+    }
 }
 
 pub type FuzzyRuleData = BTreeMap<String, Option<String>>;
@@ -131,12 +165,15 @@ async fn get_fuzzy_rules(db_client: &Database) -> Vec<FuzzyRuleDTO> {
         .await
         .unwrap();
 
-    fuzzyRules.into_iter().map(|item| FuzzyRuleDTO {
-        _id: item._id.to_string(),
-        input: item.input,
-        output: item.output,
-        valid: item.valid,
-    }).collect()
+    fuzzyRules
+        .into_iter()
+        .map(|item| FuzzyRuleDTO {
+            id: item._id.to_string(),
+            input: item.input,
+            output: item.output,
+            valid: item.valid,
+        })
+        .collect()
 }
 
 pub async fn get_settings(db: web::Data<Client>) -> SettingsDTO {
@@ -154,32 +191,7 @@ pub async fn get_settings(db: web::Data<Client>) -> SettingsDTO {
         .linguisticVariables
         .iter()
         .map(|(name, var_info)| {
-            let var = LinguisticVar::new(
-                var_info
-                    .shapes
-                    .iter()
-                    .map(|(name, shape_info)| {
-                        let parameters = &shape_info.parameters;
-                        let f = match shape_info.shapeType.as_str() {
-                            "triangle" => triangle(
-                                *parameters.get("center").unwrap(),
-                                *parameters.get("height").unwrap(),
-                                *parameters.get("width").unwrap(),
-                            ),
-                            "trapezoid" => trapezoid(
-                                *parameters.get("a").unwrap(),
-                                *parameters.get("b").unwrap(),
-                                *parameters.get("c").unwrap(),
-                                *parameters.get("d").unwrap(),
-                                *parameters.get("height").unwrap(),
-                            ),
-                            _ => zero(),
-                        };
-                        return (name.as_str(), f);
-                    })
-                    .collect(),
-                (var_info.lowerBoundary, var_info.upperBoundary),
-            );
+            let var = var_info.to_real();
             (name.to_string(), to_dto(&var, &var_info.kind))
         })
         .collect::<BTreeMap<String, LinguisticVarDTO>>();
@@ -243,7 +255,7 @@ pub async fn dalete_linguistic_var(db: web::Data<Client>, name: String) -> Strin
     }
 }
 
-pub async fn add_fuzzy_rule(db: web::Data<Client>, rule: web::Json<NewFuzzyRule>) -> String {
+pub async fn add_fuzzy_rules(db: web::Data<Client>, rule: web::Json<NewFuzzyRule>) -> String {
     let db_client = (*db).database("StockMarket");
     let setting_coll = db_client.collection::<SettingsModel>("settings");
 
@@ -255,17 +267,14 @@ pub async fn add_fuzzy_rule(db: web::Data<Client>, rule: web::Json<NewFuzzyRule>
     match doc_opt {
         Some(doc) => {
             for (k, v) in rule.input.iter().chain(rule.output.iter()) {
-                if let Some(var) = doc.linguisticVariables.get(k) {
-                    if let Some(set) = v {
-                        if !var.shapes.contains_key(set) {
-                            return format!(
-                                "This linguistic variable set \"{}\" does not exist",
-                                set
-                            );
-                        }
-                    }
-                } else {
+                let Some(var) = doc.linguisticVariables.get(k) else {
                     return format!("This linguistic variable \"{}\" does not exist", k);
+                };
+
+                if let Some(set) = v {
+                    if !var.shapes.contains_key(set) {
+                        return format!("This linguistic variable set \"{}\" does not exist", set);
+                    }
                 }
             }
         }
@@ -284,4 +293,116 @@ pub async fn add_fuzzy_rule(db: web::Data<Client>, rule: web::Json<NewFuzzyRule>
         Ok(res) => format!("{:?}", res),
         Err(err) => format!("{:?}", err),
     }
+}
+
+pub async fn delete_fuzzy_rule(db: web::Data<Client>, id: String) -> String {
+    let db_client = (*db).database("StockMarket");
+    let collection = db_client.collection::<FuzzyRuleModelWithOutId>("fuzzy-rules");
+
+    let obj_id = oid::ObjectId::from_str(&id).unwrap();
+    let result = collection.delete_one(doc! { "_id": obj_id }, None).await;
+
+    match result {
+        Ok(res) => format!("{:?}", res),
+        Err(err) => format!("{:?}", err),
+    }
+}
+
+pub fn create_fuzzy_engine(
+    setting: &SettingsModel,
+    fuzzy_rules: &Vec<FuzzyRuleModel>,
+) -> FuzzyEngine {
+    let mut fuzzy_engine = FuzzyEngine::new();
+
+    for (_, var_info) in setting.linguisticVariables.iter() {
+        let var = var_info.to_real();
+        match var_info.kind {
+            LinguisticVarKind::Output => fuzzy_engine = fuzzy_engine.add_output(var),
+            LinguisticVarKind::Input => fuzzy_engine = fuzzy_engine.add_cond(var),
+        }
+    }
+
+    for rule in fuzzy_rules {
+        let a = rule
+            .input
+            .values()
+            .map(|opt| opt.as_ref().map(|v| v.as_str()))
+            .collect::<Vec<Option<&str>>>();
+        let b = rule
+            .output
+            .values()
+            .map(|opt| opt.as_ref().map(|v| v.as_str()))
+            .collect::<Vec<Option<&str>>>();
+        fuzzy_engine = fuzzy_engine.add_rule(a, b);
+    }
+    fuzzy_engine
+}
+
+fn bb_percent(price: f64, v: (f64, f64, f64)) -> f64 {
+    let (sma, lower, upper) = v;
+
+    if price > sma {
+        return (price - sma) / (upper - sma);
+    }
+
+    (sma - price) / (sma - lower)
+}
+
+pub fn create_input(
+    setting: &SettingsModel,
+    data: &(Vec<Ohlc>, String),
+) -> Vec<(i64, Vec<Option<f64>>)> {
+    let mut dt = data
+        .0
+        .iter()
+        .map(|x| (x.time.to_chrono().timestamp_millis(), Vec::new()))
+        .collect::<Vec<(i64, Vec<Option<f64>>)>>(); // based on time
+
+    for (name, var_info) in setting.linguisticVariables.iter() {
+        if let LinguisticVarKind::Input = var_info.kind {
+            match name.as_str() {
+                "rsi" => rsi_cached(data.clone(), 14)
+                    .iter()
+                    .zip(dt.iter_mut())
+                    .for_each(|(rsi_v, x)| x.1.push(Some(rsi_v.value))),
+                "bb" => bb_cached(data.clone(), 20, 2.0)
+                    .iter()
+                    .zip(dt.iter_mut())
+                    .zip(data.0.iter())
+                    .for_each(|((bb_v, x), ohlc)| {
+                        x.1.push(Some(bb_percent(ohlc.close, bb_v.value)))
+                    }),
+                _ => {}
+            };
+        }
+    }
+
+    dt
+}
+
+pub async fn get_fuzzy_config(
+    db: &web::Data<Client>,
+    data: &(Vec<Ohlc>, String),
+) -> Result<(FuzzyEngine, Vec<(i64, Vec<Option<f64>>)>), Box<dyn Error>> {
+    let db_client = (*db).database("StockMarket");
+    let setting_coll = db_client.collection::<SettingsModel>("settings");
+    let rules_coll = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
+
+    let setting = match setting_coll
+        .find_one(doc! { "username": "tanat" }, None)
+        .await?
+    {
+        Some(doc) => doc,
+        None => return Err("Settings not found".into()),
+    };
+    let fuzzy_rules = rules_coll
+        .find(doc! { "username": "tanat" }, None)
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    Ok((
+        create_fuzzy_engine(&setting, &fuzzy_rules),
+        create_input(&setting, data),
+    ))
 }

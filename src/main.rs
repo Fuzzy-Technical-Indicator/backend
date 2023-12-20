@@ -69,7 +69,7 @@ async fn indicator_rsi(
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(rsi_cached(data, length_query.length))
 }
 
@@ -82,7 +82,7 @@ async fn indicator_bb(
 ) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
 
     let length = length_query.length;
     let stdev = other_params.stdev;
@@ -97,7 +97,7 @@ async fn indicator_macd(
 ) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
 
     web::Json(macd_cached(
         data,
@@ -115,7 +115,7 @@ async fn indicator_adx(
 ) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
 
     web::Json(adx_cached(data, length_query.length))
 }
@@ -125,7 +125,7 @@ async fn indicator_obv(db: web::Data<Client>, params: web::Query<QueryParams>) -
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(obv_cached(data))
 }
 
@@ -138,7 +138,7 @@ async fn indicator_aroon(
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(aroon_cached(data, length_query.length))
 }
 
@@ -150,7 +150,7 @@ async fn indicator_accum_dist(
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(accum_dist_cached(data))
 }
 
@@ -164,7 +164,7 @@ async fn indicator_stoch(
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(stoch_cached(
         data,
         length_query.length,
@@ -192,8 +192,8 @@ async fn fuzzy_route(db: web::Data<Client>, params: web::Query<QueryParams>) -> 
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(fuzzy_cached(&data.0, symbol, interval))
+    let data = fetch_symbol(&db, symbol, interval).await;
+    web::Json(fuzzy_cached(db, data, symbol, interval).await)
 }
 
 #[get("/settings")]
@@ -217,7 +217,13 @@ async fn delete_linguistic_var(db: web::Data<Client>, path: web::Path<String>) -
 
 #[post("/settings/fuzzyrules")]
 async fn add_fuzzy_rules(db: web::Data<Client>, rules: web::Json<NewFuzzyRule>) -> String {
-    settings::add_fuzzy_rule(db, rules).await
+    settings::add_fuzzy_rules(db, rules).await
+}
+
+#[delete("/settings/fuzzyrules/{id}")]
+async fn delete_fuzzy_rule(db: web::Data<Client>, path: web::Path<String>) -> String {
+    let id = path.into_inner();
+    settings::delete_fuzzy_rule(db, id).await
 }
 
 #[actix_web::main]
@@ -260,7 +266,8 @@ async fn main() -> std::io::Result<()> {
                     .service(get_settings)
                     .service(update_linguistic_vars)
                     .service(delete_linguistic_var)
-                    .service(add_fuzzy_rules),
+                    .service(add_fuzzy_rules)
+                    .service(delete_fuzzy_rule),
             )
     })
     .bind((ip, port))?
