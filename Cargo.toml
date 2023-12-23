@@ -5,6 +5,9 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[workspace]
+members = ["tech_indicators", "fuzzy_logic"]
+
 [dependencies]
 fuzzy_logic = { path = "fuzzy_logic" }
 tech_indicators = { path = "tech_indicators" }
