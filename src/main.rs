@@ -2,14 +2,20 @@ pub mod backtest;
 pub mod core;
 
 use core::{
-    accum_dist_cached, adx_cached, aroon_cached, bb_cached, fetch_symbol, fetch_user_ohlc,
-    fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings, stoch_cached,
+    accum_dist_cached, adx_cached, aroon_cached, bb_cached,
+    error::{map_custom_err, map_internal_err},
+    fetch_symbol, fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings,
+    stoch_cached,
 };
 
 use core::settings::{LinguisticVarsModel, NewFuzzyRule};
 
 use actix_cors::Cors;
-use actix_web::{delete, get, middleware::Logger, post, put, web, App, HttpServer, Responder};
+use actix_web::HttpResponse;
+use actix_web::{
+    delete, get, middleware::Logger, post, put, web, App, HttpServer, Responder,
+    Result as ActixResult,
+};
 use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
@@ -188,12 +194,19 @@ async fn indicator_naranjo_macd(
 */
 
 #[get("/fuzzy")]
-async fn fuzzy_route(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
+async fn fuzzy_route(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+) -> ActixResult<HttpResponse> {
     let symbol = &params.symbol;
     let interval = &params.interval;
 
     let data = fetch_symbol(&db, symbol, interval).await;
-    web::Json(fuzzy_cached(db, data, symbol, interval).await)
+    let result = fuzzy_cached(db, data, symbol, interval)
+        .await
+        .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().json(result))
 }
 
 #[get("/settings")]
@@ -212,12 +225,19 @@ async fn update_linguistic_vars(
 #[delete("/settings/linguisticvars/{name}")]
 async fn delete_linguistic_var(db: web::Data<Client>, path: web::Path<String>) -> String {
     let name = path.into_inner();
-    settings::dalete_linguistic_var(db, name).await
+    settings::delete_linguistic_var(db, name).await
 }
 
 #[post("/settings/fuzzyrules")]
-async fn add_fuzzy_rules(db: web::Data<Client>, rules: web::Json<NewFuzzyRule>) -> String {
-    settings::add_fuzzy_rules(db, rules).await
+async fn add_fuzzy_rules(
+    db: web::Data<Client>,
+    rules: web::Json<NewFuzzyRule>,
+) -> ActixResult<HttpResponse> {
+    let result = settings::add_fuzzy_rules(db, rules)
+        .await
+        .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().body(result))
 }
 
 #[delete("/settings/fuzzyrules/{id}")]

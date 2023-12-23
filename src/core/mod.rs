@@ -1,15 +1,18 @@
+pub mod error;
 pub mod settings;
 
-use actix_web::web;
+use actix_web::{error::ErrorInternalServerError, web};
 use cached::proc_macro::cached;
 use chrono::{Timelike, Utc};
 use futures::stream::TryStreamExt;
 
 use mongodb::{
     bson::{doc, Document},
-    Client, Collection,
+    options::IndexOptions,
+    Client, Collection, Database, IndexModel,
 };
 use serde::{Deserialize, Serialize};
+use std::error::Error;
 use std::time::Instant;
 use tech_indicators::{
     accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, naranjo_macd, obv, rsi, stoch,
@@ -17,6 +20,11 @@ use tech_indicators::{
 };
 
 use crate::Interval;
+
+use self::{
+    error::{map_internal_err, CustomError},
+    settings::FuzzyRuleModelWithOutId,
+};
 
 const DEBUG: bool = false;
 
@@ -42,6 +50,19 @@ pub fn cachable_dt() -> (u32, bool) {
     let curr = Utc::now();
     let gt_thirty = curr.minute() > 30;
     (curr.hour(), gt_thirty)
+}
+
+pub async fn get_rules_coll(
+    db_client: &Database,
+) -> Result<Collection<FuzzyRuleModelWithOutId>, mongodb::error::Error> {
+    let rules_coll = db_client.collection::<FuzzyRuleModelWithOutId>("fuzzy-rules");
+    let opts = IndexOptions::builder().unique(true).build();
+    let index = IndexModel::builder()
+        .keys(doc! { "input": 1, "output": 1, "username": 1})
+        .options(opts)
+        .build();
+    rules_coll.create_index(index, None).await?;
+    Ok(rules_coll)
 }
 
 fn aggrdoc_to_ohlc(docs: Vec<Document>) -> Vec<Ohlc> {
@@ -151,30 +172,16 @@ pub async fn fetch_user_ohlc(
         .collect()
 }
 
-#[cached(
-    time = 120,
-    key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
-)]
 pub async fn fuzzy_cached(
     db: web::Data<Client>,
     data: (Vec<Ohlc>, String),
     _symbol: &str,
     _interval: &Option<Interval>,
-) -> Vec<DTValue<Vec<f64>>> {
-    /*
-    if DEBUG {
-        let rsi_v = measure_time(|| rsi(data, 14), "rsi");
-        let bb_v = measure_time(|| bb(data, 20, 2.0), "bb");
-        let price = measure_time(|| data.iter().map(|x| x.close).collect(), "price");
-        let result = measure_time(|| fuzzy_indicator(rsi_v, bb_v, price), "fuzzy");
-        return measure_time(|| result, "_");
-    }
-    */
-
-    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data).await.unwrap();
-
-    fuzzy_indicator(&fuzzy_engine, inputs)
+) -> Result<Vec<DTValue<Vec<f64>>>, CustomError> {
+    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data)
+        .await
+        .map_err(map_internal_err)?;
+    Ok(fuzzy_indicator(&fuzzy_engine, inputs))
 }
 
 #[cached(

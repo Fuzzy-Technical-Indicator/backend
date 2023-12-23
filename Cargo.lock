@@ -296,9 +296,11 @@ dependencies = [
  "futures",
  "fuzzy_logic",
  "mongodb",
+ "rayon",
  "serde",
  "serde_json",
  "tech_indicators",
+ "thiserror",
  "tokio",
 ]
 
