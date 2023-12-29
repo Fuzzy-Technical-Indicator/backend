@@ -2,14 +2,20 @@ pub mod backtest;
 pub mod core;
 
 use core::{
-    accum_dist_cached, adx_cached, aroon_cached, bb_cached, fetch_symbol, fetch_user_ohlc,
-    fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings, stoch_cached,
+    accum_dist_cached, adx_cached, aroon_cached, bb_cached,
+    error::{map_custom_err},
+    fetch_symbol, fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings,
+    stoch_cached,
 };
 
-use core::settings::{update_settings, SettingsModel};
+use core::settings::{LinguisticVarsModel, NewFuzzyRule};
 
 use actix_cors::Cors;
-use actix_web::{delete, get, middleware::Logger, put, web, App, HttpServer, Responder};
+use actix_web::HttpResponse;
+use actix_web::{
+    delete, get, middleware::Logger, post, put, web, App, HttpServer, Responder,
+    Result as ActixResult,
+};
 use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
@@ -69,7 +75,7 @@ async fn indicator_rsi(
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(rsi_cached(data, length_query.length))
 }
 
@@ -82,7 +88,7 @@ async fn indicator_bb(
 ) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
 
     let length = length_query.length;
     let stdev = other_params.stdev;
@@ -97,7 +103,7 @@ async fn indicator_macd(
 ) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
 
     web::Json(macd_cached(
         data,
@@ -115,7 +121,7 @@ async fn indicator_adx(
 ) -> impl Responder {
     let symbol = &params.symbol;
     let interval = &params.interval;
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
 
     web::Json(adx_cached(data, length_query.length))
 }
@@ -125,7 +131,7 @@ async fn indicator_obv(db: web::Data<Client>, params: web::Query<QueryParams>) -
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(obv_cached(data))
 }
 
@@ -138,7 +144,7 @@ async fn indicator_aroon(
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(aroon_cached(data, length_query.length))
 }
 
@@ -150,7 +156,7 @@ async fn indicator_accum_dist(
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(accum_dist_cached(data))
 }
 
@@ -164,7 +170,7 @@ async fn indicator_stoch(
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
+    let data = fetch_symbol(&db, symbol, interval).await;
     web::Json(stoch_cached(
         data,
         length_query.length,
@@ -188,12 +194,19 @@ async fn indicator_naranjo_macd(
 */
 
 #[get("/fuzzy")]
-async fn fuzzy_route(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Responder {
+async fn fuzzy_route(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+) -> ActixResult<HttpResponse> {
     let symbol = &params.symbol;
     let interval = &params.interval;
 
-    let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(fuzzy_cached(&data.0, symbol, interval))
+    let data = fetch_symbol(&db, symbol, interval).await;
+    let result = fuzzy_cached(db, data, symbol, interval)
+        .await
+        .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().json(result))
 }
 
 #[get("/settings")]
@@ -201,15 +214,47 @@ async fn get_settings(db: web::Data<Client>) -> impl Responder {
     web::Json(settings::get_settings(db).await)
 }
 
-#[put("/settings")]
-async fn put_settings(db: web::Data<Client>, info: web::Json<SettingsModel>) -> impl Responder {
-    web::Json(update_settings(db, info).await)
+#[put("/settings/linguisticvars")]
+async fn update_linguistic_vars(
+    db: web::Data<Client>,
+    vars: web::Json<LinguisticVarsModel>,
+) -> ActixResult<HttpResponse> {
+    let result = settings::update_linguistic_vars(db, vars)
+        .await
+        .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().body(result))
 }
 
-#[delete("/settings/linguisticvar/{name}")]
+#[delete("/settings/linguisticvars/{name}")]
 async fn delete_linguistic_var(db: web::Data<Client>, path: web::Path<String>) -> String {
     let name = path.into_inner();
-    settings::dalete_linguistic_var(db, name).await
+    settings::delete_linguistic_var(db, name).await
+}
+
+#[post("/settings/fuzzyrules")]
+async fn add_fuzzy_rules(
+    db: web::Data<Client>,
+    rules: web::Json<NewFuzzyRule>,
+) -> ActixResult<HttpResponse> {
+    let result = settings::add_fuzzy_rules(db, rules)
+        .await
+        .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().body(result))
+}
+
+#[delete("/settings/fuzzyrules/{id}")]
+async fn delete_fuzzy_rule(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let id = path.into_inner();
+    let result = settings::delete_fuzzy_rule(db, id)
+        .await
+        .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().body(result))
 }
 
 #[actix_web::main]
@@ -250,8 +295,10 @@ async fn main() -> std::io::Result<()> {
                     .service(ohlc)
                     .service(fuzzy_route)
                     .service(get_settings)
-                    .service(put_settings)
-                    .service(delete_linguistic_var),
+                    .service(update_linguistic_vars)
+                    .service(delete_linguistic_var)
+                    .service(add_fuzzy_rules)
+                    .service(delete_fuzzy_rule),
             )
     })
     .bind((ip, port))?
