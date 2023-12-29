@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
-use actix_web::{error::ErrorNotFound, web};
-use futures::{TryStreamExt, TryFutureExt};
+use actix_web::web;
+use futures::TryStreamExt;
 use fuzzy_logic::{
     linguistic::LinguisticVar,
     shape::{trapezoid, triangle, zero},
@@ -9,21 +9,33 @@ use fuzzy_logic::{
 use mongodb::{
     bson::{doc, oid, serde_helpers::deserialize_hex_string_from_object_id, to_bson, Bson},
     error::{ErrorKind, WriteFailure},
-    options::IndexOptions,
-    Client, Database, IndexModel,
+    Client, Database,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, error::Error, str::FromStr};
 use tech_indicators::Ohlc;
 
-use super::{bb_cached, error::{CustomError, map_internal_err}, rsi_cached, get_rules_coll};
+use super::{
+    bb_cached,
+    error::{map_internal_err, CustomError},
+    get_rules_coll, rsi_cached,
+};
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub enum LinguisticVarKind {
     #[serde(rename(serialize = "input", deserialize = "input"))]
     Input,
     #[serde(rename(serialize = "output", deserialize = "output"))]
     Output,
+}
+
+impl std::string::ToString for LinguisticVarKind {
+    fn to_string(&self) -> String {
+        match self {
+            LinguisticVarKind::Input => "input".to_string(),
+            LinguisticVarKind::Output => "output".to_string(),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -201,15 +213,50 @@ pub async fn get_settings(db: web::Data<Client>) -> SettingsDTO {
         fuzzyRules: get_fuzzy_rules(&db_client).await,
     }
 }
-/*
-* When this is updated, what should happend with the linguistic variables?
-*/
+
 pub async fn update_linguistic_vars(
     db: web::Data<Client>,
     linguisticVariables: web::Json<LinguisticVarsModel>,
-) -> String {
+) -> Result<String, CustomError> {
     let db_client = (*db).database("StockMarket");
-    let collection = db_client.collection::<SettingsModel>("settings");
+    let setting_coll = db_client.collection::<SettingsModel>("settings");
+
+    let setting = match setting_coll
+        .find_one(doc! { "username": "tanat" }, None)
+        .await
+        .map_err(map_internal_err)?
+    {
+        Some(doc) => doc,
+        None => return Err(CustomError::SettingsNotFound),
+    };
+
+    let mut rules_filter = vec![];
+    for (k, var1) in setting.linguisticVariables {
+        if let Some(var2) = linguisticVariables.get(&k) {
+            if var1.kind != var2.kind {
+                return Err(CustomError::InternalError(
+                    "The kind of the linguistic variable cannot be changed".to_string(),
+                ));
+            }
+
+            for x in var1.shapes.keys().filter(|x| !var2.shapes.contains_key(*x)) {
+                rules_filter.push(doc! {
+                    format!("{}.{}", var1.kind.to_string(), k): x
+                });
+            }
+        }
+    }
+    if !rules_filter.is_empty() {
+        let rules_coll = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
+        rules_coll
+            .update_many(
+                doc! { "$or": rules_filter },
+                doc! { "$set": { "valid": false } },
+                None,
+            )
+            .await
+            .map_err(map_internal_err)?;
+    }
 
     let data = to_bson(
         &linguisticVariables
@@ -221,15 +268,14 @@ pub async fn update_linguistic_vars(
             })
             .collect::<BTreeMap<String, Bson>>(),
     )
-    .unwrap();
-    let update_result = collection
-        .update_one(doc! { "username": "tanat"}, doc! { "$set": data }, None)
-        .await;
+    .map_err(map_internal_err)?;
 
-    match update_result {
-        Ok(res) => format!("{:?}", res),
-        Err(err) => format!("{:?}", err),
-    }
+    setting_coll
+        .update_one(doc! { "username": "tanat"}, doc! { "$set": data }, None)
+        .await
+        .map_err(map_internal_err)?;
+
+    Ok("Linguisitc variables have been updated successfully".to_string())
 }
 
 pub async fn delete_linguistic_var(db: web::Data<Client>, name: String) -> String {
@@ -274,9 +320,9 @@ pub async fn add_fuzzy_rules(
                     return Err(CustomError::LinguisticVarNotFound(k.to_string()));
                 };
 
-                if let Some(set) = v {
-                    if !var.shapes.contains_key(set) {
-                        return Err(CustomError::LinguisticVarShapeNotFound(set.to_string()));
+                if let Some(shape) = v {
+                    if !var.shapes.contains_key(shape) {
+                        return Err(CustomError::LinguisticVarShapeNotFound(shape.to_string()));
                     }
                 }
             }
@@ -284,7 +330,9 @@ pub async fn add_fuzzy_rules(
         None => return Err(CustomError::SettingsNotFound),
     }
 
-    let rules_coll = get_rules_coll(&db_client).await.map_err(map_internal_err)?;
+    if rule.input.values().all(|x| x.is_none()) | rule.output.values().all(|x| x.is_none()) {
+        return Err(CustomError::RuleNotValid);
+    };
 
     let data = FuzzyRuleModelWithOutId {
         input: rule.input.clone(),
@@ -293,11 +341,13 @@ pub async fn add_fuzzy_rules(
         valid: true,
     };
 
+    let rules_coll = get_rules_coll(&db_client).await?;
     rules_coll
         .insert_one(data, None)
         .await
         .map_err(|e| match *e.kind {
             ErrorKind::Write(WriteFailure::WriteError(w_err)) => {
+                // error on unique index constraint
                 if w_err.code == 11000 {
                     CustomError::RuleAlreadyExist
                 } else {
@@ -310,17 +360,33 @@ pub async fn add_fuzzy_rules(
     Ok("The rule is added successfully".to_string())
 }
 
-pub async fn delete_fuzzy_rule(db: web::Data<Client>, id: String) -> String {
+pub async fn delete_fuzzy_rule(db: web::Data<Client>, id: String) -> Result<String, CustomError> {
     let db_client = (*db).database("StockMarket");
-    let collection = db_client.collection::<FuzzyRuleModelWithOutId>("fuzzy-rules");
+    let collection = get_rules_coll(&db_client).await?;
+    let obj_id = oid::ObjectId::from_str(&id).map_err(map_internal_err)?;
 
-    let obj_id = oid::ObjectId::from_str(&id).unwrap();
-    let result = collection.delete_one(doc! { "_id": obj_id }, None).await;
+    let result = collection
+        .delete_one(doc! { "_id": obj_id }, None)
+        .await
+        .map_err(map_internal_err)?;
 
-    match result {
-        Ok(res) => format!("{:?}", res),
-        Err(err) => format!("{:?}", err),
+    if result.deleted_count == 0 {
+        return Err(CustomError::RuleNotFound(id));
     }
+    Ok("The rule has been deleted successfully".to_string())
+}
+
+fn to_rule_params<'a>(
+    linguistic_var: &'a Vec<String>,
+    rule_linguistic_var: &'a BTreeMap<String, Option<String>>,
+) -> Vec<Option<&'a str>> {
+    linguistic_var
+        .iter()
+        .map(|name| match rule_linguistic_var.get(name) {
+            Some(x) => x.as_ref().map(|v| v.as_str()),
+            None => None,
+        })
+        .collect()
 }
 
 pub fn create_fuzzy_engine(
@@ -329,25 +395,26 @@ pub fn create_fuzzy_engine(
 ) -> FuzzyEngine {
     let mut fuzzy_engine = FuzzyEngine::new();
 
-    for (_, var_info) in setting.linguisticVariables.iter() {
+    let mut linguistic_var_inputs = vec![];
+    let mut linguistic_var_outputs = vec![];
+
+    for (name, var_info) in setting.linguisticVariables.iter() {
         let var = var_info.to_real();
         match var_info.kind {
-            LinguisticVarKind::Output => fuzzy_engine = fuzzy_engine.add_output(var),
-            LinguisticVarKind::Input => fuzzy_engine = fuzzy_engine.add_cond(var),
+            LinguisticVarKind::Output => {
+                fuzzy_engine = fuzzy_engine.add_output(var);
+                linguistic_var_outputs.push(name.to_owned())
+            }
+            LinguisticVarKind::Input => {
+                fuzzy_engine = fuzzy_engine.add_cond(var);
+                linguistic_var_inputs.push(name.to_owned())
+            }
         }
     }
 
     for rule in fuzzy_rules {
-        let a = rule
-            .input
-            .values()
-            .map(|opt| opt.as_ref().map(|v| v.as_str()))
-            .collect::<Vec<Option<&str>>>();
-        let b = rule
-            .output
-            .values()
-            .map(|opt| opt.as_ref().map(|v| v.as_str()))
-            .collect::<Vec<Option<&str>>>();
+        let a = to_rule_params(&linguistic_var_inputs, &rule.input);
+        let b = to_rule_params(&linguistic_var_outputs, &rule.output);
         fuzzy_engine = fuzzy_engine.add_rule(a, b);
     }
     fuzzy_engine
@@ -408,10 +475,10 @@ pub async fn get_fuzzy_config(
         .await?
     {
         Some(doc) => doc,
-        None => return Err("Settings not found".into()),
+        None => return Err(CustomError::SettingsNotFound.into()),
     };
     let fuzzy_rules = rules_coll
-        .find(doc! { "username": "tanat" }, None)
+        .find(doc! { "username": "tanat", "valid": true }, None)
         .await?
         .try_collect::<Vec<_>>()
         .await?;

@@ -3,7 +3,7 @@ pub mod core;
 
 use core::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached,
-    error::{map_custom_err, map_internal_err},
+    error::{map_custom_err},
     fetch_symbol, fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings,
     stoch_cached,
 };
@@ -218,8 +218,12 @@ async fn get_settings(db: web::Data<Client>) -> impl Responder {
 async fn update_linguistic_vars(
     db: web::Data<Client>,
     vars: web::Json<LinguisticVarsModel>,
-) -> String {
-    settings::update_linguistic_vars(db, vars).await
+) -> ActixResult<HttpResponse> {
+    let result = settings::update_linguistic_vars(db, vars)
+        .await
+        .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().body(result))
 }
 
 #[delete("/settings/linguisticvars/{name}")]
@@ -241,9 +245,16 @@ async fn add_fuzzy_rules(
 }
 
 #[delete("/settings/fuzzyrules/{id}")]
-async fn delete_fuzzy_rule(db: web::Data<Client>, path: web::Path<String>) -> String {
+async fn delete_fuzzy_rule(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
     let id = path.into_inner();
-    settings::delete_fuzzy_rule(db, id).await
+    let result = settings::delete_fuzzy_rule(db, id)
+        .await
+        .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().body(result))
 }
 
 #[actix_web::main]

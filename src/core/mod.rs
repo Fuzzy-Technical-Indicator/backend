@@ -1,7 +1,7 @@
 pub mod error;
 pub mod settings;
 
-use actix_web::{error::ErrorInternalServerError, web};
+use actix_web::web;
 use cached::proc_macro::cached;
 use chrono::{Timelike, Utc};
 use futures::stream::TryStreamExt;
@@ -12,7 +12,6 @@ use mongodb::{
     Client, Collection, Database, IndexModel,
 };
 use serde::{Deserialize, Serialize};
-use std::error::Error;
 use std::time::Instant;
 use tech_indicators::{
     accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, naranjo_macd, obv, rsi, stoch,
@@ -23,7 +22,7 @@ use crate::Interval;
 
 use self::{
     error::{map_internal_err, CustomError},
-    settings::FuzzyRuleModelWithOutId,
+    settings::{FuzzyRuleModelWithOutId},
 };
 
 const DEBUG: bool = false;
@@ -54,14 +53,14 @@ pub fn cachable_dt() -> (u32, bool) {
 
 pub async fn get_rules_coll(
     db_client: &Database,
-) -> Result<Collection<FuzzyRuleModelWithOutId>, mongodb::error::Error> {
+) -> Result<Collection<FuzzyRuleModelWithOutId>, CustomError> {
     let rules_coll = db_client.collection::<FuzzyRuleModelWithOutId>("fuzzy-rules");
     let opts = IndexOptions::builder().unique(true).build();
     let index = IndexModel::builder()
         .keys(doc! { "input": 1, "output": 1, "username": 1})
         .options(opts)
         .build();
-    rules_coll.create_index(index, None).await?;
+    rules_coll.create_index(index, None).await.map_err(map_internal_err)?;
     Ok(rules_coll)
 }
 

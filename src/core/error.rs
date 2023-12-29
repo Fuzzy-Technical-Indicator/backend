@@ -1,4 +1,4 @@
-use actix_web::error::{ErrorInternalServerError, ErrorNotFound, ErrorBadRequest};
+use actix_web::error::{ErrorBadRequest, ErrorInternalServerError, ErrorNotFound};
 
 #[derive(thiserror::Error, Debug)]
 pub enum CustomError {
@@ -13,6 +13,12 @@ pub enum CustomError {
 
     #[error("The rule already exists")]
     RuleAlreadyExist,
+
+    #[error("The rule with id \"{0}\" was not found")]
+    RuleNotFound(String),
+
+    #[error("The rule need to have atleast one input and one output")]
+    RuleNotValid,
 
     #[error("{0}")]
     InternalError(String),
@@ -31,6 +37,8 @@ pub fn map_custom_err(e: CustomError) -> actix_web::Error {
         LinguisticVarShapeNotFound(_) => ErrorNotFound(e.to_string()),
         SettingsNotFound => ErrorNotFound(e.to_string()),
         RuleAlreadyExist => ErrorBadRequest(e.to_string()),
+        RuleNotFound(_) => ErrorNotFound(e.to_string()),
+        RuleNotValid => ErrorBadRequest(e.to_string()),
         _ => ErrorInternalServerError(e.to_string()),
     }
 }
