@@ -8,8 +8,7 @@ use futures::stream::TryStreamExt;
 
 use mongodb::{
     bson::{doc, Document},
-    options::IndexOptions,
-    Client, Collection, Database, IndexModel,
+    Client, Collection,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -20,10 +19,7 @@ use tech_indicators::{
 
 use crate::Interval;
 
-use self::{
-    error::{map_internal_err, CustomError},
-    settings::{FuzzyRuleModelWithOutId},
-};
+use self::error::{map_internal_err, CustomError};
 
 const DEBUG: bool = false;
 
@@ -49,19 +45,6 @@ pub fn cachable_dt() -> (u32, bool) {
     let curr = Utc::now();
     let gt_thirty = curr.minute() > 30;
     (curr.hour(), gt_thirty)
-}
-
-pub async fn get_rules_coll(
-    db_client: &Database,
-) -> Result<Collection<FuzzyRuleModelWithOutId>, CustomError> {
-    let rules_coll = db_client.collection::<FuzzyRuleModelWithOutId>("fuzzy-rules");
-    let opts = IndexOptions::builder().unique(true).build();
-    let index = IndexModel::builder()
-        .keys(doc! { "input": 1, "output": 1, "username": 1})
-        .options(opts)
-        .build();
-    rules_coll.create_index(index, None).await.map_err(map_internal_err)?;
-    Ok(rules_coll)
 }
 
 fn aggrdoc_to_ohlc(docs: Vec<Document>) -> Vec<Ohlc> {
@@ -174,10 +157,11 @@ pub async fn fetch_user_ohlc(
 pub async fn fuzzy_cached(
     db: web::Data<Client>,
     data: (Vec<Ohlc>, String),
+    preset: &String,
     _symbol: &str,
     _interval: &Option<Interval>,
 ) -> Result<Vec<DTValue<Vec<f64>>>, CustomError> {
-    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data)
+    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data, preset)
         .await
         .map_err(map_internal_err)?;
     Ok(fuzzy_indicator(&fuzzy_engine, inputs))

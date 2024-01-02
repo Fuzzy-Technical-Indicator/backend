@@ -2,10 +2,8 @@ pub mod backtest;
 pub mod core;
 
 use core::{
-    accum_dist_cached, adx_cached, aroon_cached, bb_cached,
-    error::{map_custom_err},
-    fetch_symbol, fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings,
-    stoch_cached,
+    accum_dist_cached, adx_cached, aroon_cached, bb_cached, error::map_custom_err, fetch_symbol,
+    fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings, stoch_cached,
 };
 
 use core::settings::{LinguisticVarsModel, NewFuzzyRule};
@@ -57,6 +55,11 @@ struct MacdQueryParams {
 struct StochQueryParams {
     k: usize,
     d: usize,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PresetQueryParam {
+    preset: String,
 }
 
 #[get("/ohlc")]
@@ -197,12 +200,14 @@ async fn indicator_naranjo_macd(
 async fn fuzzy_route(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
+    preset_query: web::Query<PresetQueryParam>,
 ) -> ActixResult<HttpResponse> {
     let symbol = &params.symbol;
     let interval = &params.interval;
+    let preset = &preset_query.preset;
 
     let data = fetch_symbol(&db, symbol, interval).await;
-    let result = fuzzy_cached(db, data, symbol, interval)
+    let result = fuzzy_cached(db, data, preset, symbol, interval)
         .await
         .map_err(map_custom_err)?;
 
@@ -210,16 +215,23 @@ async fn fuzzy_route(
 }
 
 #[get("/settings")]
-async fn get_settings(db: web::Data<Client>) -> impl Responder {
-    web::Json(settings::get_settings(db).await)
+async fn get_settings(
+    db: web::Data<Client>,
+    query: web::Query<PresetQueryParam>,
+) -> ActixResult<HttpResponse> {
+    let result = settings::get_setting(db, &query.preset)
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().json(result))
 }
 
 #[put("/settings/linguisticvars")]
 async fn update_linguistic_vars(
     db: web::Data<Client>,
     vars: web::Json<LinguisticVarsModel>,
+    query: web::Query<PresetQueryParam>,
 ) -> ActixResult<HttpResponse> {
-    let result = settings::update_linguistic_vars(db, vars)
+    let result = settings::update_linguistic_vars(db, vars, &query.preset)
         .await
         .map_err(map_custom_err)?;
 
@@ -227,17 +239,26 @@ async fn update_linguistic_vars(
 }
 
 #[delete("/settings/linguisticvars/{name}")]
-async fn delete_linguistic_var(db: web::Data<Client>, path: web::Path<String>) -> String {
+async fn delete_linguistic_var(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+    query: web::Query<PresetQueryParam>,
+) -> ActixResult<HttpResponse> {
     let name = path.into_inner();
-    settings::delete_linguistic_var(db, name).await
+    let result = settings::delete_linguistic_var(db, &query.preset, name)
+        .await
+        .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().body(result))
 }
 
 #[post("/settings/fuzzyrules")]
 async fn add_fuzzy_rules(
     db: web::Data<Client>,
     rules: web::Json<NewFuzzyRule>,
+    query: web::Query<PresetQueryParam>,
 ) -> ActixResult<HttpResponse> {
-    let result = settings::add_fuzzy_rules(db, rules)
+    let result = settings::add_fuzzy_rules(db, rules, &query.preset)
         .await
         .map_err(map_custom_err)?;
 
@@ -254,6 +275,31 @@ async fn delete_fuzzy_rule(
         .await
         .map_err(map_custom_err)?;
 
+    Ok(HttpResponse::Ok().body(result))
+}
+
+#[get("/settings/presets")]
+async fn get_presets(db: web::Data<Client>) -> ActixResult<HttpResponse> {
+    let result = settings::get_presets(&db).await.map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().json(result))
+}
+
+#[post("/settings/presets/{preset}")]
+async fn add_preset(db: web::Data<Client>, path: web::Path<String>) -> ActixResult<HttpResponse> {
+    let result = settings::add_preset(&db, path.into_inner())
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().body(result))
+}
+
+#[delete("/settings/presets/{preset}")]
+async fn delete_preset(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let result = settings::delete_preset(&db, path.into_inner())
+        .await
+        .map_err(map_custom_err)?;
     Ok(HttpResponse::Ok().body(result))
 }
 
@@ -298,7 +344,10 @@ async fn main() -> std::io::Result<()> {
                     .service(update_linguistic_vars)
                     .service(delete_linguistic_var)
                     .service(add_fuzzy_rules)
-                    .service(delete_fuzzy_rule),
+                    .service(delete_fuzzy_rule)
+                    .service(get_presets)
+                    .service(add_preset)
+                    .service(delete_preset),
             )
     })
     .bind((ip, port))?
