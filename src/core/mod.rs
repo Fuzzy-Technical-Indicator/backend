@@ -1,5 +1,6 @@
 pub mod error;
 pub mod settings;
+pub mod users;
 
 use actix_web::web;
 use cached::proc_macro::cached;
@@ -22,6 +23,7 @@ use crate::Interval;
 use self::error::{map_internal_err, CustomError};
 
 const DEBUG: bool = false;
+const DB_NAME: &str = "StockMarket";
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct UserOhlc {
@@ -114,7 +116,7 @@ pub async fn fetch_symbol(
 ) -> (Vec<Ohlc>, String) {
     let now = Instant::now();
 
-    let db_client = (*db).database("StockMarket");
+    let db_client = (*db).database(DB_NAME);
     let collection = db_client.collection::<Ohlc>(symbol);
     let result = aggr_fetch(&collection, interval).await;
 
@@ -158,10 +160,9 @@ pub async fn fuzzy_cached(
     db: web::Data<Client>,
     data: (Vec<Ohlc>, String),
     preset: &String,
-    _symbol: &str,
-    _interval: &Option<Interval>,
+    username: String,
 ) -> Result<Vec<DTValue<Vec<f64>>>, CustomError> {
-    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data, preset)
+    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data, preset, &username)
         .await
         .map_err(map_internal_err)?;
     Ok(fuzzy_indicator(&fuzzy_engine, inputs))

@@ -19,7 +19,7 @@ use tech_indicators::Ohlc;
 use super::{
     bb_cached,
     error::{map_internal_err, CustomError},
-    rsi_cached,
+    rsi_cached, DB_NAME,
 };
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -176,7 +176,7 @@ pub struct SettingModel {
 async fn get_rules_coll(
     db: &web::Data<Client>,
 ) -> Result<Collection<FuzzyRuleModelWithOutId>, CustomError> {
-    let db_client = (*db).database("StockMarket");
+    let db_client = (*db).database(DB_NAME);
     let rules_coll = db_client.collection::<FuzzyRuleModelWithOutId>("fuzzy-rules");
     let opts = IndexOptions::builder().unique(true).build();
     let index = IndexModel::builder()
@@ -193,12 +193,13 @@ async fn get_rules_coll(
 async fn get_fuzzy_rules(
     db: &web::Data<Client>,
     preset: &String,
+    username: &String,
 ) -> Result<Vec<FuzzyRuleDTO>, CustomError> {
-    let db_client = (*db).database("StockMarket");
+    let db_client = (*db).database(DB_NAME);
     let collection = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
 
     let fuzzyRules = collection
-        .find(doc! { "username": "tanat", "preset": preset }, None)
+        .find(doc! { "username": username, "preset": preset }, None)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()
@@ -219,10 +220,11 @@ async fn get_fuzzy_rules(
 async fn get_linguistic_variables(
     db: &web::Data<Client>,
     preset: &String,
+    username: &String,
 ) -> Result<BTreeMap<String, LinguisticVarDTO>, CustomError> {
     let collection = get_setting_coll(db).await?;
     let doc_opt = collection
-        .find_one(doc! { "username": "tanat", "preset": preset }, None)
+        .find_one(doc! { "username": username, "preset": preset }, None)
         .await
         .map_err(map_internal_err)?;
     if let Some(doc) = doc_opt {
@@ -238,10 +240,11 @@ async fn get_linguistic_variables(
 pub async fn get_setting(
     db: web::Data<Client>,
     preset: &String,
+    username: &String,
 ) -> Result<SettingsDTO, CustomError> {
     Ok(SettingsDTO {
-        linguisticVariables: get_linguistic_variables(&db, preset).await?,
-        fuzzyRules: get_fuzzy_rules(&db, preset).await?,
+        linguisticVariables: get_linguistic_variables(&db, preset, username).await?,
+        fuzzyRules: get_fuzzy_rules(&db, preset, username).await?,
     })
 }
 
@@ -249,10 +252,11 @@ pub async fn update_linguistic_vars(
     db: web::Data<Client>,
     linguisticVariables: web::Json<LinguisticVarsModel>,
     preset: &String,
+    username: &String,
 ) -> Result<String, CustomError> {
     let setting_coll = get_setting_coll(&db).await?;
     let setting = match setting_coll
-        .find_one(doc! { "username": "tanat", "preset": preset }, None)
+        .find_one(doc! { "username": username, "preset": preset }, None)
         .await
         .map_err(map_internal_err)?
     {
@@ -277,7 +281,7 @@ pub async fn update_linguistic_vars(
         }
     }
     if !rules_filter.is_empty() {
-        let db_client = (*db).database("StockMarket");
+        let db_client = (*db).database(DB_NAME);
         let rules_coll = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
         rules_coll
             .update_many(
@@ -321,7 +325,7 @@ pub async fn update_linguistic_vars(
 
     setting_coll
         .update_one(
-            doc! { "username": "tanat", "preset": preset },
+            doc! { "username": username, "preset": preset },
             doc! { "$set": data },
             None,
         )
@@ -335,6 +339,7 @@ pub async fn delete_linguistic_var(
     db: web::Data<Client>,
     preset: &String,
     name: String,
+    username: String,
 ) -> Result<String, CustomError> {
     let collection = get_setting_coll(&db).await?;
     let target = doc! {
@@ -342,7 +347,7 @@ pub async fn delete_linguistic_var(
     };
     let result = collection
         .update_one(
-            doc! { "username": "tanat", "preset": preset },
+            doc! { "username": username, "preset": preset },
             doc! { "$unset": target },
             None,
         )
@@ -360,11 +365,12 @@ pub async fn add_fuzzy_rules(
     db: web::Data<Client>,
     rule: web::Json<NewFuzzyRule>,
     preset: &String,
+    username: String,
 ) -> Result<String, CustomError> {
     let setting_coll = get_setting_coll(&db).await?;
 
     let doc_opt = setting_coll
-        .find_one(doc! { "username": "tanat", "preset": preset }, None)
+        .find_one(doc! { "username": username, "preset": preset }, None)
         .await
         .map_err(|_| CustomError::SettingsNotFound)?;
 
@@ -518,13 +524,14 @@ pub async fn get_fuzzy_config(
     db: &web::Data<Client>,
     data: &(Vec<Ohlc>, String),
     preset: &String,
+    username: &String
 ) -> Result<(FuzzyEngine, Vec<(i64, Vec<Option<f64>>)>), CustomError> {
-    let db_client = (*db).database("StockMarket");
+    let db_client = (*db).database(DB_NAME);
     let setting_coll = get_setting_coll(db).await?;
     let rules_coll = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
 
     let setting = match setting_coll
-        .find_one(doc! { "username": "tanat", "preset": preset }, None)
+        .find_one(doc! { "username": username, "preset": preset }, None)
         .await
         .map_err(map_internal_err)?
     {
@@ -534,7 +541,7 @@ pub async fn get_fuzzy_config(
 
     let fuzzy_rules = rules_coll
         .find(
-            doc! { "username": "tanat", "preset": preset, "valid": true },
+            doc! { "username": username, "preset": preset, "valid": true },
             None,
         )
         .await
@@ -552,7 +559,7 @@ pub async fn get_fuzzy_config(
 pub async fn get_setting_coll(
     db: &web::Data<Client>,
 ) -> Result<Collection<SettingModel>, CustomError> {
-    let db_client = (*db).database("StockMarket");
+    let db_client = (*db).database(DB_NAME);
     let coll = db_client.collection::<SettingModel>("linguistic-vars");
     let opts = IndexOptions::builder().unique(true).build();
     let index = IndexModel::builder()
@@ -565,10 +572,14 @@ pub async fn get_setting_coll(
     Ok(coll)
 }
 
-pub async fn add_preset(db: &web::Data<Client>, preset: String) -> Result<String, CustomError> {
+pub async fn add_preset(
+    db: &web::Data<Client>,
+    preset: String,
+    username: String,
+) -> Result<String, CustomError> {
     let linguistic_vars_coll = get_setting_coll(db).await?;
     let data = SettingModel {
-        username: "tanat".to_string(),
+        username,
         preset,
         vars: BTreeMap::new(),
     };
@@ -582,31 +593,44 @@ pub async fn add_preset(db: &web::Data<Client>, preset: String) -> Result<String
 async fn delete_preset_transaction(
     session: &mut mongodb::ClientSession,
     preset: String,
+    username: String,
 ) -> Result<(), mongodb::error::Error> {
     let linguistic_vars_coll = session
         .client()
-        .database("StockMarket")
+        .database(DB_NAME)
         .collection::<SettingModel>("linguistic-vars");
     linguistic_vars_coll
-        .delete_one(doc! { "username": "tanat", "preset": preset.clone() }, None)
+        .delete_one(
+            doc! { "username": username.clone(), "preset": preset.clone() },
+            None,
+        )
         .await?;
 
     let rules_coll = session
         .client()
-        .database("StockMarket")
+        .database(DB_NAME)
         .collection::<FuzzyRuleModel>("fuzzy-rules");
     rules_coll
-        .delete_many(doc! { "username": "tanat", "preset": preset.clone() }, None)
+        .delete_many(
+            doc! { "username": username, "preset": preset.clone() },
+            None,
+        )
         .await?;
     Ok(())
 }
 
-pub async fn delete_preset(db: &web::Data<Client>, preset: String) -> Result<String, CustomError> {
+pub async fn delete_preset(
+    db: &web::Data<Client>,
+    preset: String,
+    username: String,
+) -> Result<String, CustomError> {
     let mut session = db.start_session(None).await.map_err(map_internal_err)?;
     session
         .with_transaction(
             (),
-            |session, _| delete_preset_transaction(session, preset.clone()).boxed(),
+            |session, _| {
+                delete_preset_transaction(session, preset.clone(), username.clone()).boxed()
+            },
             None,
         )
         .await
@@ -615,10 +639,13 @@ pub async fn delete_preset(db: &web::Data<Client>, preset: String) -> Result<Str
     Ok(format!("Deleted preset \"{}\" successfully", preset))
 }
 
-pub async fn get_presets(db: &web::Data<Client>) -> Result<Vec<String>, CustomError> {
+pub async fn get_presets(
+    db: &web::Data<Client>,
+    username: String,
+) -> Result<Vec<String>, CustomError> {
     let linguistic_vars_coll = get_setting_coll(db).await?;
     let docs = linguistic_vars_coll
-        .find(doc! { "username": "tanat" }, None)
+        .find(doc! { "username": username }, None)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()
