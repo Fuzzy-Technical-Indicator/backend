@@ -202,7 +202,7 @@ async fn indicator_naranjo_macd(
 }
 */
 
-#[get("/fuzzy")]
+#[get("")]
 async fn fuzzy_route(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
@@ -416,12 +416,12 @@ async fn main() -> std::io::Result<()> {
                     .service(add_preset)
                     .service(delete_preset),
             )
-            .service(web::scope("/api").service(ohlc).service(register))
             .service(
-                web::scope("/api")
+                web::scope("/api/fuzzy")
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(fuzzy_route),
             )
+            .service(web::scope("/api").service(ohlc).service(register))
     })
     .keep_alive(KeepAlive::Os)
     .bind((ip, port))?
