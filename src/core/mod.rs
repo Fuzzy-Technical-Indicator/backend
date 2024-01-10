@@ -18,12 +18,20 @@ use tech_indicators::{
     DTValue, Ohlc,
 };
 
-use crate::Interval;
-
-use self::error::{map_internal_err, CustomError};
+use self::{error::{map_internal_err, CustomError}, users::User};
 
 const DEBUG: bool = false;
-const DB_NAME: &str = "StockMarket";
+pub const DB_NAME: &str = "StockMarket";
+
+#[derive(Deserialize, Debug, PartialEq, Clone, Hash, Eq)]
+pub enum Interval {
+    #[serde(rename = "1h")]
+    OneHour,
+    #[serde(rename = "4h")]
+    FourHour,
+    #[serde(rename = "1d")]
+    OneDay,
+}
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct UserOhlc {
@@ -160,9 +168,9 @@ pub async fn fuzzy_cached(
     db: web::Data<Client>,
     data: (Vec<Ohlc>, String),
     preset: &String,
-    username: String,
+    user: User,
 ) -> Result<Vec<DTValue<Vec<f64>>>, CustomError> {
-    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data, preset, &username)
+    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data, preset, &user)
         .await
         .map_err(map_internal_err)?;
     Ok(fuzzy_indicator(&fuzzy_engine, inputs))
@@ -243,7 +251,7 @@ pub fn accum_dist_cached(data: (Vec<Ohlc>, String)) -> Vec<DTValue<f64>> {
 #[cached(
     time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}", data.1, cachable_dt()) }"#
+    convert = r#"{ format!("{}{}{}{}{:?}", data.1, k, d, length, cachable_dt()) }"#
 )]
 pub fn stoch_cached(
     data: (Vec<Ohlc>, String),

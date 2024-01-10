@@ -19,7 +19,7 @@ use tech_indicators::Ohlc;
 use super::{
     bb_cached,
     error::{map_internal_err, CustomError},
-    rsi_cached, DB_NAME,
+    rsi_cached, DB_NAME, users::User,
 };
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -167,10 +167,10 @@ pub struct FuzzyRuleModelWithOutId {
 pub type LinguisticVarsModel = BTreeMap<String, LinguisticVarModel>;
 
 #[derive(Deserialize, Serialize)]
-pub struct SettingModel {
+pub struct LinguisticVarPresetModel {
     username: String,
     preset: String,
-    vars: BTreeMap<String, LinguisticVarModel>,
+    vars: LinguisticVarsModel,
 }
 
 async fn get_rules_coll(
@@ -450,7 +450,7 @@ fn to_rule_params<'a>(
         .collect()
 }
 
-fn create_fuzzy_engine(setting: &SettingModel, fuzzy_rules: &Vec<FuzzyRuleModel>) -> FuzzyEngine {
+fn create_fuzzy_engine(setting: &LinguisticVarPresetModel, fuzzy_rules: &Vec<FuzzyRuleModel>) -> FuzzyEngine {
     let mut fuzzy_engine = FuzzyEngine::new();
 
     let mut linguistic_var_inputs = vec![];
@@ -489,8 +489,9 @@ fn bb_percent(price: f64, v: (f64, f64, f64)) -> f64 {
 }
 
 fn create_input(
-    setting: &SettingModel,
+    setting: &LinguisticVarPresetModel,
     data: &(Vec<Ohlc>, String),
+    user: &User
 ) -> Vec<(i64, Vec<Option<f64>>)> {
     let mut dt = data
         .0
@@ -501,11 +502,11 @@ fn create_input(
     for (name, var_info) in setting.vars.iter() {
         if let LinguisticVarKind::Input = var_info.kind {
             match name.as_str() {
-                "rsi" => rsi_cached(data.clone(), 14)
+                "rsi" => rsi_cached(data.clone(), user.rsi.length)
                     .iter()
                     .zip(dt.iter_mut())
                     .for_each(|(rsi_v, x)| x.1.push(Some(rsi_v.value))),
-                "bb" => bb_cached(data.clone(), 20, 2.0)
+                "bb" => bb_cached(data.clone(), user.bb.length, user.bb.stdev)
                     .iter()
                     .zip(dt.iter_mut())
                     .zip(data.0.iter())
@@ -524,11 +525,12 @@ pub async fn get_fuzzy_config(
     db: &web::Data<Client>,
     data: &(Vec<Ohlc>, String),
     preset: &String,
-    username: &String
+    user: &User
 ) -> Result<(FuzzyEngine, Vec<(i64, Vec<Option<f64>>)>), CustomError> {
     let db_client = (*db).database(DB_NAME);
     let setting_coll = get_setting_coll(db).await?;
     let rules_coll = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
+    let username = &user.username;
 
     let setting = match setting_coll
         .find_one(doc! { "username": username, "preset": preset }, None)
@@ -552,15 +554,15 @@ pub async fn get_fuzzy_config(
 
     Ok((
         create_fuzzy_engine(&setting, &fuzzy_rules),
-        create_input(&setting, data),
+        create_input(&setting, data, &user),
     ))
 }
 
 pub async fn get_setting_coll(
     db: &web::Data<Client>,
-) -> Result<Collection<SettingModel>, CustomError> {
+) -> Result<Collection<LinguisticVarPresetModel>, CustomError> {
     let db_client = (*db).database(DB_NAME);
-    let coll = db_client.collection::<SettingModel>("linguistic-vars");
+    let coll = db_client.collection::<LinguisticVarPresetModel>("linguistic-vars");
     let opts = IndexOptions::builder().unique(true).build();
     let index = IndexModel::builder()
         .keys(doc! { "username": 1, "preset": 1})
@@ -578,7 +580,7 @@ pub async fn add_preset(
     username: String,
 ) -> Result<String, CustomError> {
     let linguistic_vars_coll = get_setting_coll(db).await?;
-    let data = SettingModel {
+    let data = LinguisticVarPresetModel {
         username,
         preset,
         vars: BTreeMap::new(),
@@ -598,7 +600,7 @@ async fn delete_preset_transaction(
     let linguistic_vars_coll = session
         .client()
         .database(DB_NAME)
-        .collection::<SettingModel>("linguistic-vars");
+        .collection::<LinguisticVarPresetModel>("linguistic-vars");
     linguistic_vars_coll
         .delete_one(
             doc! { "username": username.clone(), "preset": preset.clone() },

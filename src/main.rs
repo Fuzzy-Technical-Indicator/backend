@@ -2,11 +2,11 @@ pub mod backtest;
 pub mod core;
 
 use core::error::CustomError;
-use core::users;
 use core::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached, error::map_custom_err, fetch_symbol,
     fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings, stoch_cached,
 };
+use core::{users, Interval};
 
 use core::settings::{LinguisticVarsModel, NewFuzzyRule};
 
@@ -24,16 +24,6 @@ use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Debug, PartialEq, Clone, Hash, Eq)]
-pub enum Interval {
-    #[serde(rename = "1h")]
-    OneHour,
-    #[serde(rename = "4h")]
-    FourHour,
-    #[serde(rename = "1d")]
-    OneDay,
-}
-
 #[derive(Deserialize)]
 struct QueryParams {
     symbol: String,
@@ -43,11 +33,6 @@ struct QueryParams {
 #[derive(Deserialize)]
 struct LengthQueryParam {
     length: usize,
-}
-
-#[derive(Deserialize)]
-struct BBQueryParams {
-    stdev: f64,
 }
 
 #[derive(Deserialize)]
@@ -79,60 +64,65 @@ async fn ohlc(db: web::Data<Client>, params: web::Query<QueryParams>) -> impl Re
 async fn indicator_rsi(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
-    length_query: web::Query<LengthQueryParam>,
-) -> impl Responder {
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+
     let symbol = &params.symbol;
     let interval = &params.interval;
 
     let data = fetch_symbol(&db, symbol, interval).await;
-    web::Json(rsi_cached(data, length_query.length))
+    Ok(HttpResponse::Ok().json(rsi_cached(data, user.rsi.length)))
 }
 
 #[get("/bb")]
 async fn indicator_bb(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
-    length_query: web::Query<LengthQueryParam>,
-    other_params: web::Query<BBQueryParams>,
-) -> impl Responder {
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+
     let symbol = &params.symbol;
     let interval = &params.interval;
     let data = fetch_symbol(&db, symbol, interval).await;
 
-    let length = length_query.length;
-    let stdev = other_params.stdev;
-    web::Json(bb_cached(data, length, stdev))
+    let length = user.bb.length;
+    let stdev = user.bb.stdev;
+    Ok(HttpResponse::Ok().json(bb_cached(data, length, stdev)))
 }
 
 #[get("/macd")]
 async fn indicator_macd(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
-    other_params: web::Query<MacdQueryParams>,
-) -> impl Responder {
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
     let symbol = &params.symbol;
     let interval = &params.interval;
     let data = fetch_symbol(&db, symbol, interval).await;
 
-    web::Json(macd_cached(
+    Ok(HttpResponse::Ok().json(macd_cached(
         data,
-        other_params.fast,
-        other_params.slow,
-        other_params.smooth,
-    ))
+        user.macd.fast,
+        user.macd.slow,
+        user.macd.smooth,
+    )))
 }
 
 #[get("/adx")]
 async fn indicator_adx(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
-    length_query: web::Query<LengthQueryParam>,
-) -> impl Responder {
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
     let symbol = &params.symbol;
     let interval = &params.interval;
     let data = fetch_symbol(&db, symbol, interval).await;
 
-    web::Json(adx_cached(data, length_query.length))
+    Ok(HttpResponse::Ok().json(adx_cached(data, user.adx.length)))
 }
 
 #[get("/obv")]
@@ -148,13 +138,14 @@ async fn indicator_obv(db: web::Data<Client>, params: web::Query<QueryParams>) -
 async fn indicator_aroon(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
-    length_query: web::Query<LengthQueryParam>,
-) -> impl Responder {
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
     let symbol = &params.symbol;
     let interval = &params.interval;
 
     let data = fetch_symbol(&db, symbol, interval).await;
-    web::Json(aroon_cached(data, length_query.length))
+    Ok(HttpResponse::Ok().json(aroon_cached(data, user.aroon.length)))
 }
 
 #[get("/accumdist")]
@@ -173,19 +164,19 @@ async fn indicator_accum_dist(
 async fn indicator_stoch(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
-    length_query: web::Query<LengthQueryParam>,
-    other_params: web::Query<StochQueryParams>,
-) -> impl Responder {
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
     let symbol = &params.symbol;
     let interval = &params.interval;
 
     let data = fetch_symbol(&db, symbol, interval).await;
-    web::Json(stoch_cached(
+    Ok(HttpResponse::Ok().json(stoch_cached(
         data,
-        length_query.length,
-        other_params.k,
-        other_params.d,
-    ))
+        user.stoch.length,
+        user.stoch.k,
+        user.stoch.d,
+    )))
 }
 
 /*
@@ -209,13 +200,13 @@ async fn fuzzy_route(
     preset_query: web::Query<PresetQueryParam>,
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
-    let username = is_username_exist(req)?;
+    let user = is_user_exist(req)?;
     let symbol = &params.symbol;
     let interval = &params.interval;
     let preset = &preset_query.preset;
 
     let data = fetch_symbol(&db, symbol, interval).await;
-    let result = fuzzy_cached(db, data, preset, username)
+    let result = fuzzy_cached(db, data, preset, user)
         .await
         .map_err(map_custom_err)?;
 
@@ -228,7 +219,7 @@ async fn get_settings(
     query: web::Query<PresetQueryParam>,
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
-    let username = is_username_exist(req)?;
+    let username = is_user_exist(req)?.username;
     let result = settings::get_setting(db, &query.preset, &username)
         .await
         .map_err(map_custom_err)?;
@@ -242,7 +233,7 @@ async fn update_linguistic_vars(
     query: web::Query<PresetQueryParam>,
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
-    let username = is_username_exist(req)?;
+    let username = is_user_exist(req)?.username;
     let result = settings::update_linguistic_vars(db, vars, &query.preset, &username)
         .await
         .map_err(map_custom_err)?;
@@ -257,7 +248,7 @@ async fn delete_linguistic_var(
     query: web::Query<PresetQueryParam>,
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
-    let username = is_username_exist(req)?;
+    let username = is_user_exist(req)?.username;
     let name = path.into_inner();
     let result = settings::delete_linguistic_var(db, &query.preset, name, username)
         .await
@@ -273,7 +264,7 @@ async fn add_fuzzy_rules(
     query: web::Query<PresetQueryParam>,
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
-    let username = is_username_exist(req)?;
+    let username = is_user_exist(req)?.username;
     let result = settings::add_fuzzy_rules(db, rules, &query.preset, username)
         .await
         .map_err(map_custom_err)?;
@@ -297,7 +288,7 @@ async fn delete_fuzzy_rule(
 
 #[get("/presets")]
 async fn get_presets(db: web::Data<Client>, req: HttpRequest) -> ActixResult<HttpResponse> {
-    let username = is_username_exist(req)?;
+    let username = is_user_exist(req)?.username;
     let result = settings::get_presets(&db, username)
         .await
         .map_err(map_custom_err)?;
@@ -310,7 +301,7 @@ async fn add_preset(
     path: web::Path<String>,
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
-    let username = is_username_exist(req)?;
+    let username = is_user_exist(req)?.username;
     let result = settings::add_preset(&db, path.into_inner(), username)
         .await
         .map_err(map_custom_err)?;
@@ -323,7 +314,7 @@ async fn delete_preset(
     path: web::Path<String>,
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
-    let username = is_username_exist(req)?;
+    let username = is_user_exist(req)?.username;
     let result = settings::delete_preset(&db, path.into_inner(), username)
         .await
         .map_err(map_custom_err)?;
@@ -338,9 +329,28 @@ async fn register(db: web::Data<Client>, path: web::Path<String>) -> ActixResult
     Ok(HttpResponse::Ok().into())
 }
 
-fn is_username_exist(req: HttpRequest) -> Result<String, actix_web::Error> {
-    if let Some(username) = req.extensions().get::<String>() {
-        return Ok(username.to_string());
+#[put("/users")]
+async fn update_user_setting(
+    db: web::Data<Client>,
+    data: web::Json<users::TASetting>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let username = is_user_exist(req)?.username;
+    users::update_user_setting(&db, username, data)
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().into())
+}
+
+#[get("/users")]
+async fn get_user_setting(req: HttpRequest) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    Ok(HttpResponse::Ok().json(user))
+}
+
+fn is_user_exist(req: HttpRequest) -> Result<users::User, actix_web::Error> {
+    if let Some(user) = req.extensions().get::<users::User>() {
+        return Ok(user.clone());
     }
     Err(map_custom_err(CustomError::InternalError(
         "Can't get username from actix extension".to_string(),
@@ -357,9 +367,12 @@ async fn auth_validator(
         let result = users::auth_user(db, username.as_str())
             .await
             .map_err(map_custom_err);
-        req.extensions_mut().insert(username);
+
         match result {
-            Ok(_) => return Ok(req),
+            Ok(user) => {
+                req.extensions_mut().insert(user);
+                return Ok(req);
+            }
             Err(e) => return Err((e, req)),
         }
     }
@@ -395,14 +408,15 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(client.clone()))
             .service(
                 web::scope("/api/indicators")
+                    .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(indicator_macd)
-                    .service(indicator_bb)
-                    .service(indicator_adx)
-                    .service(indicator_rsi)
-                    .service(indicator_obv)
-                    .service(indicator_aroon)
                     .service(indicator_stoch)
-                    .service(indicator_accum_dist), //.service(indicator_naranjo_macd),
+                    .service(indicator_accum_dist)
+                    .service(indicator_obv)
+                    .service(indicator_bb)
+                    .service(indicator_rsi)
+                    .service(indicator_aroon)
+                    .service(indicator_adx),
             )
             .service(
                 web::scope("/api/settings")
@@ -414,7 +428,9 @@ async fn main() -> std::io::Result<()> {
                     .service(delete_fuzzy_rule)
                     .service(get_presets)
                     .service(add_preset)
-                    .service(delete_preset),
+                    .service(delete_preset)
+                    .service(update_user_setting)
+                    .service(get_user_setting),
             )
             .service(
                 web::scope("/api/fuzzy")
