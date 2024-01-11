@@ -23,6 +23,7 @@ use actix_web_httpauth::middleware::HttpAuthentication;
 use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
+use tech_indicators::fuzzy::fuzzy_indicator;
 
 #[derive(Deserialize)]
 struct QueryParams {
@@ -384,6 +385,38 @@ async fn auth_validator(
     ))
 }
 
+
+#[post("/run")]
+async fn run_backtesting(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    preset_query: web::Query<PresetQueryParam>,
+    backtest_request: web::Json<backtest::BacktestRequest>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+
+    let user = is_user_exist(req)?;
+    print!("{}", user.username);
+    let symbol = &params.symbol;
+    let interval = &params.interval;
+    let preset = &preset_query.preset;
+
+    let user_ohlc_datas = fetch_user_ohlc(db.clone(), symbol, interval).await;
+    let ohlc_datas = fetch_symbol(&db, symbol, interval).await;
+    let fuzzy_config  = settings::get_fuzzy_config(&db, &ohlc_datas, preset, &user).await;
+    let fuzzy_output = match fuzzy_config {
+        Ok(v) => fuzzy_indicator(&v.0, v.1),
+        Err(_) => todo!()
+    };
+
+    let backtest_result = backtest::run_backtest(backtest_request.into_inner(), user_ohlc_datas, fuzzy_output).await;
+
+    let result = backtest::BacktestReport::new(user.username, symbol.to_string(), interval.clone(), preset.to_string(), backtest_result);
+
+    Ok(HttpResponse::Ok().json(result))
+}
+
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let uri = dotenvy::var("MONGO_DB_URI").unwrap();
@@ -436,6 +469,11 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api/fuzzy")
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(fuzzy_route),
+            )
+            .service(
+                web::scope("/api/backtesting")
+                .wrap(HttpAuthentication::bearer(auth_validator))
+                .service(run_backtesting),
             )
             .service(web::scope("/api").service(ohlc).service(register))
     })

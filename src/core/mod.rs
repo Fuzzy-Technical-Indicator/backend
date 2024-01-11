@@ -23,7 +23,7 @@ use self::{error::{map_internal_err, CustomError}, users::User};
 const DEBUG: bool = false;
 pub const DB_NAME: &str = "StockMarket";
 
-#[derive(Deserialize, Debug, PartialEq, Clone, Hash, Eq)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Clone, Hash, Eq)]
 pub enum Interval {
     #[serde(rename = "1h")]
     OneHour,
