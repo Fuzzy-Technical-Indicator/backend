@@ -171,10 +171,13 @@ fn compute_aj(
         .zip(inputs_var.iter())
         .zip(inputs.iter())
         .map(|((term, var), input)| match term {
-            None => 1.0, // membership function should not exceed 1.0
-            Some(term) => var.degree_of(term, input.unwrap()).unwrap_or(1.0),
+            None => 1.0, // no term ??
+            Some(term) => match input {
+                Some(v) => var.degree_of(term, *v).unwrap_or(1.0),
+                None => 1.0,
+            },
         })
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.total_cmp(b))
 }
 
 fn min_sets(outputs_var: &Vec<LinguisticVar>, res: &Vec<Option<String>>, aj: f64) -> Vec<FuzzySet> {
