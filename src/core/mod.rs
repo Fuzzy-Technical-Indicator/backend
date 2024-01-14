@@ -1,4 +1,5 @@
 pub mod error;
+pub mod fuzzy;
 pub mod settings;
 pub mod users;
 
@@ -18,7 +19,10 @@ use tech_indicators::{
     DTValue, Ohlc,
 };
 
-use self::{error::{map_internal_err, CustomError}, users::User};
+use self::{
+    error::{map_internal_err, CustomError},
+    users::User,
+};
 
 const DEBUG: bool = false;
 pub const DB_NAME: &str = "StockMarket";
@@ -170,7 +174,7 @@ pub async fn fuzzy_cached(
     preset: &String,
     user: User,
 ) -> Result<Vec<DTValue<Vec<f64>>>, CustomError> {
-    let (fuzzy_engine, inputs) = settings::get_fuzzy_config(&db, &data, preset, &user)
+    let (fuzzy_engine, inputs) = fuzzy::get_fuzzy_config(&db, &data, preset, &user)
         .await
         .map_err(map_internal_err)?;
     Ok(fuzzy_indicator(&fuzzy_engine, inputs))

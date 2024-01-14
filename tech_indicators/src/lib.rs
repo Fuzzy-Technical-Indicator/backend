@@ -98,7 +98,7 @@ pub fn to_option_vec<T: Copy>(src: &[T]) -> Vec<Option<T>> {
     src.iter().map(|x| Some(*x)).collect()
 }
 
-/// Embed datetiume from [Ohlc] to Iterator of T, and we need to ensure that the data and ohlc order are matched.
+/// Embed datetime from [Ohlc] to Iterator of T, and we need to ensure that the data and ohlc order are matched.
 fn embed_datetime<T>(data: &[T], ohlc: &[Ohlc]) -> Vec<DTValue<T>>
 where
     T: Send + Sync + Copy,

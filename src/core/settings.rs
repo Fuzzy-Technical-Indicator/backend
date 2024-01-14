@@ -4,7 +4,6 @@ use futures::{FutureExt, TryStreamExt};
 use fuzzy_logic::{
     linguistic::LinguisticVar,
     shape::{trapezoid, triangle, zero},
-    FuzzyEngine,
 };
 use mongodb::{
     bson::{doc, oid, serde_helpers::deserialize_hex_string_from_object_id, to_bson},
@@ -14,12 +13,11 @@ use mongodb::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, str::FromStr};
-use tech_indicators::Ohlc;
+
 
 use super::{
-    bb_cached,
     error::{map_internal_err, CustomError},
-    rsi_cached, DB_NAME, users::User,
+    DB_NAME,
 };
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -79,7 +77,7 @@ pub struct LinguisticVarModel {
     upperBoundary: f64,
     lowerBoundary: f64,
     shapes: BTreeMap<String, ShapeModel>,
-    kind: LinguisticVarKind,
+    pub kind: LinguisticVarKind,
 }
 
 impl LinguisticVarModel {
@@ -148,8 +146,8 @@ pub struct NewFuzzyRule {
 pub struct FuzzyRuleModel {
     #[serde(deserialize_with = "deserialize_hex_string_from_object_id")]
     _id: String,
-    input: FuzzyRuleData,
-    output: FuzzyRuleData,
+    pub input: FuzzyRuleData,
+    pub output: FuzzyRuleData,
     username: String,
     preset: String,
     valid: bool,
@@ -170,7 +168,7 @@ pub type LinguisticVarsModel = BTreeMap<String, LinguisticVarModel>;
 pub struct LinguisticVarPresetModel {
     username: String,
     preset: String,
-    vars: LinguisticVarsModel,
+    pub vars: LinguisticVarsModel,
 }
 
 async fn get_rules_coll(
@@ -435,127 +433,6 @@ pub async fn delete_fuzzy_rule(db: web::Data<Client>, id: String) -> Result<Stri
         return Err(CustomError::RuleNotFound(id));
     }
     Ok("The rule has been deleted successfully".to_string())
-}
-
-fn to_rule_params<'a>(
-    linguistic_var: &'a [String],
-    rule_linguistic_var: &'a BTreeMap<String, Option<String>>,
-) -> Vec<Option<&'a str>> {
-    linguistic_var
-        .iter()
-        .map(|name| match rule_linguistic_var.get(name) {
-            Some(x) => x.as_ref().map(|v| v.as_str()),
-            None => None,
-        })
-        .collect()
-}
-
-fn create_fuzzy_engine(setting: &LinguisticVarPresetModel, fuzzy_rules: &Vec<FuzzyRuleModel>) -> FuzzyEngine {
-    let mut fuzzy_engine = FuzzyEngine::new();
-
-    let mut linguistic_var_inputs = vec![];
-    let mut linguistic_var_outputs = vec![];
-
-    for (name, var_info) in setting.vars.iter() {
-        let var = var_info.to_real();
-        match var_info.kind {
-            LinguisticVarKind::Output => {
-                fuzzy_engine = fuzzy_engine.add_output(var);
-                linguistic_var_outputs.push(name.to_owned())
-            }
-            LinguisticVarKind::Input => {
-                fuzzy_engine = fuzzy_engine.add_cond(var);
-                linguistic_var_inputs.push(name.to_owned())
-            }
-        }
-    }
-
-    for rule in fuzzy_rules {
-        let a = to_rule_params(&linguistic_var_inputs, &rule.input);
-        let b = to_rule_params(&linguistic_var_outputs, &rule.output);
-        fuzzy_engine = fuzzy_engine.add_rule(a, b);
-    }
-    fuzzy_engine
-}
-
-fn bb_percent(price: f64, v: (f64, f64, f64)) -> f64 {
-    let (sma, lower, upper) = v;
-
-    if price > sma {
-        return (price - sma) / (upper - sma);
-    }
-
-    (sma - price) / (sma - lower)
-}
-
-fn create_input(
-    setting: &LinguisticVarPresetModel,
-    data: &(Vec<Ohlc>, String),
-    user: &User
-) -> Vec<(i64, Vec<Option<f64>>)> {
-    let mut dt = data
-        .0
-        .iter()
-        .map(|x| (x.time.to_chrono().timestamp_millis(), Vec::new()))
-        .collect::<Vec<(i64, Vec<Option<f64>>)>>(); // based on time
-
-    for (name, var_info) in setting.vars.iter() {
-        if let LinguisticVarKind::Input = var_info.kind {
-            match name.as_str() {
-                "rsi" => rsi_cached(data.clone(), user.rsi.length)
-                    .iter()
-                    .zip(dt.iter_mut())
-                    .for_each(|(rsi_v, x)| x.1.push(Some(rsi_v.value))),
-                "bb" => bb_cached(data.clone(), user.bb.length, user.bb.stdev)
-                    .iter()
-                    .zip(dt.iter_mut())
-                    .zip(data.0.iter())
-                    .for_each(|((bb_v, x), ohlc)| {
-                        x.1.push(Some(bb_percent(ohlc.close, bb_v.value)))
-                    }),
-                _ => {}
-            };
-        }
-    }
-
-    dt
-}
-
-pub async fn get_fuzzy_config(
-    db: &web::Data<Client>,
-    data: &(Vec<Ohlc>, String),
-    preset: &String,
-    user: &User
-) -> Result<(FuzzyEngine, Vec<(i64, Vec<Option<f64>>)>), CustomError> {
-    let db_client = (*db).database(DB_NAME);
-    let setting_coll = get_setting_coll(db).await?;
-    let rules_coll = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
-    let username = &user.username;
-
-    let setting = match setting_coll
-        .find_one(doc! { "username": username, "preset": preset }, None)
-        .await
-        .map_err(map_internal_err)?
-    {
-        Some(doc) => doc,
-        None => return Err(CustomError::SettingsNotFound),
-    };
-
-    let fuzzy_rules = rules_coll
-        .find(
-            doc! { "username": username, "preset": preset, "valid": true },
-            None,
-        )
-        .await
-        .map_err(map_internal_err)?
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(map_internal_err)?;
-
-    Ok((
-        create_fuzzy_engine(&setting, &fuzzy_rules),
-        create_input(&setting, data, &user),
-    ))
 }
 
 pub async fn get_setting_coll(
