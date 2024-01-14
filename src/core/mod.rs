@@ -2,6 +2,7 @@ pub mod error;
 pub mod fuzzy;
 pub mod settings;
 pub mod users;
+pub mod backtest;
 
 use actix_web::web;
 use cached::proc_macro::cached;
@@ -27,7 +28,7 @@ use self::{
 const DEBUG: bool = false;
 pub const DB_NAME: &str = "StockMarket";
 
-#[derive(Deserialize, Debug, PartialEq, Clone, Hash, Eq)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Clone, Hash, Eq)]
 pub enum Interval {
     #[serde(rename = "1h")]
     OneHour,

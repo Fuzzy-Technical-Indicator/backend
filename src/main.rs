@@ -1,4 +1,3 @@
-pub mod backtest;
 pub mod core;
 
 use core::error::CustomError;
@@ -23,6 +22,7 @@ use actix_web_httpauth::middleware::HttpAuthentication;
 use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
+
 
 #[derive(Deserialize)]
 struct QueryParams {
@@ -366,6 +366,32 @@ async fn auth_validator(
     ))
 }
 
+#[post("/run")]
+async fn run_backtest(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    preset_query: web::Query<PresetQueryParam>,
+    backtest_request: web::Json<core::backtest::BacktestRequest>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    let symbol = &params.symbol;
+    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
+    let preset = &preset_query.preset;
+
+    let result = core::backtest::run_backtest(
+        db,
+        backtest_request.into_inner(),
+        &user,
+        symbol,
+        interval,
+        preset,
+    )
+    .await;
+
+    Ok(HttpResponse::Ok().json(result))
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let uri = dotenvy::var("MONGO_DB_URI").unwrap();
@@ -418,6 +444,11 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api/fuzzy")
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(fuzzy_route),
+            )
+            .service(
+                web::scope("/api/backtesting")
+                    .wrap(HttpAuthentication::bearer(auth_validator))
+                    .service(run_backtest),
             )
             .service(web::scope("/api").service(ohlc).service(register))
     })
