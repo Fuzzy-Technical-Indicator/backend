@@ -2,6 +2,7 @@ pub mod error;
 pub mod fuzzy;
 pub mod settings;
 pub mod users;
+pub mod backtest;
 
 use actix_web::web;
 use cached::proc_macro::cached;
