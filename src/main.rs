@@ -30,24 +30,6 @@ struct QueryParams {
     interval: Option<Interval>,
 }
 
-#[derive(Deserialize)]
-struct LengthQueryParam {
-    length: usize,
-}
-
-#[derive(Deserialize)]
-struct MacdQueryParams {
-    fast: usize,
-    slow: usize,
-    smooth: usize,
-}
-
-#[derive(Deserialize, Serialize)]
-struct StochQueryParams {
-    k: usize,
-    d: usize,
-}
-
 #[derive(Deserialize, Serialize)]
 struct PresetQueryParam {
     preset: String,
