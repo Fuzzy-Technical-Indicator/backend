@@ -14,7 +14,6 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, str::FromStr};
 
-
 use super::{
     error::{map_internal_err, CustomError},
     DB_NAME,
