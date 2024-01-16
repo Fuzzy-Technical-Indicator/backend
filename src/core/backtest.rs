@@ -1,19 +1,28 @@
-use crate::core::{Interval};
+use std::collections::BTreeMap;
+
+use crate::core::Interval;
 use actix_web::web;
 use chrono::Utc;
-use mongodb::Client;
+use futures::TryStreamExt;
+use mongodb::{bson::doc, Client};
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
 
 use super::{
+    error::{map_internal_err, CustomError},
     fetch_symbol,
-    fuzzy::{get_fuzzy_config},
+    fuzzy::get_fuzzy_config,
     users::User,
+    DB_NAME,
 };
 
-#[derive(Debug)]
+const COLLECTION_NAME: &str = "backtest-reports";
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 enum PosType {
+    #[serde(rename = "long")]
     Long,
+    #[serde(rename = "short")]
     Short,
 }
 
@@ -62,7 +71,7 @@ impl Position {
 struct SignalCondition {
     signal_index: u64,
     signal_threshold: f64,
-    signal_do_command: i8, // 0 is long, 1 is short
+    signal_do_command: PosType,
     entry_size_percent: f64,
     take_profit_when: f64,
     stop_loss_when: f64,
@@ -76,36 +85,43 @@ pub struct BacktestRequest {
     signal_conditions: Vec<SignalCondition>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Trades {
     pnl: f64,
     pnl_percent: f64,
     trades: i64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct MaximunDrawdown {
     amount: f64,
     percent: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CumalativeReturn {
+    time: i64,
+    value: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BacktestResult {
     backtest_request: BacktestRequest,
     maximum_drawdown: MaximunDrawdown,
     profit_trades: Trades,
     loss_trades: Trades,
     total: Trades,
-    run_at: i64,
+    cumalative_return: Vec<CumalativeReturn>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BacktestReport {
-    user: String,
+    username: String,
     ticker: String,
     interval: Interval,
     fuzzy_preset: String,
     backtest_result: BacktestResult,
+    run_at: i64,
 }
 
 // TODO need to have one randomly entering a postion for backtest
@@ -141,7 +157,7 @@ fn backtest(
                             if p_diff >= p.take_profit_when || p_diff <= -p.stop_loss_when {
                                 let realized_amount = (p.amount / p.enter_price) * ohlc.close;
                                 let pnl = realized_amount - p.amount;
-                                working_capital += pnl;
+                                working_capital += p.amount + pnl;
                                 p.realized = Some(RealizedInfo {
                                     pnl,
                                     exit_price: ohlc.close,
@@ -153,7 +169,7 @@ fn backtest(
                             if -p_diff >= p.take_profit_when || -p_diff <= -p.stop_loss_when {
                                 let realized_amount = (p.amount / p.enter_price) * ohlc.close;
                                 let pnl = p.amount - realized_amount;
-                                working_capital += pnl;
+                                working_capital += p.amount + pnl;
                                 p.realized = Some(RealizedInfo {
                                     pnl,
                                     exit_price: ohlc.close,
@@ -175,8 +191,9 @@ fn backtest(
             if signal.value[condition.signal_index as usize] > condition.signal_threshold {
                 // if we enter a position, determine the size of the position and enter it
                 // maybe we can many methods of position sizing
-                let entry_amount =
-                    ((condition.entry_size_percent / 100.0) * working_capital).min(working_capital);
+                let entry_amount = (((condition.entry_size_percent / 100.0) * working_capital)
+                    .max(100f64))
+                .min(working_capital);
 
                 working_capital -= entry_amount;
                 positions.push(Position::new(
@@ -185,15 +202,12 @@ fn backtest(
                     entry_amount,
                     condition.take_profit_when,
                     condition.stop_loss_when,
-                    match condition.signal_do_command {
-                        0 => PosType::Long,
-                        1 => PosType::Short,
-                        _ => todo!(),
-                    },
+                    condition.signal_do_command.clone(),
                 ));
             }
         }
     }
+
 
     // realized the remaining positions
     let last_ohlc = valid_ohlc
@@ -202,15 +216,28 @@ fn backtest(
     for p in &mut positions {
         match p.realized {
             Some(_) => continue,
-            None => {
-                let realized_amount = (p.amount / p.enter_price) * last_ohlc.close;
-                let pnl = realized_amount - p.amount;
-                p.realized = Some(RealizedInfo {
-                    pnl,
-                    exit_price: last_ohlc.close,
-                    exit_time: last_ohlc.time.timestamp_millis(),
-                });
-            }
+            None => match p.pos_type {
+                PosType::Long => {
+                    let realized_amount = (p.amount / p.enter_price) * last_ohlc.close;
+                    let pnl = realized_amount - p.amount;
+                    working_capital += p.amount + pnl;
+                    p.realized = Some(RealizedInfo {
+                        pnl,
+                        exit_price: last_ohlc.close,
+                        exit_time: last_ohlc.time.timestamp_millis(),
+                    });
+                }
+                PosType::Short => {
+                    let realized_amount = (p.amount / p.enter_price) * last_ohlc.close;
+                    let pnl = p.amount - realized_amount;
+                    working_capital += p.amount + pnl;
+                    p.realized = Some(RealizedInfo {
+                        pnl,
+                        exit_price: last_ohlc.close,
+                        exit_time: last_ohlc.time.timestamp_millis(),
+                    });
+                }
+            },
         }
     }
 
@@ -220,24 +247,39 @@ fn backtest(
 fn generate_report(
     positions: &[Position],
     initial_capital: f64,
-) -> (MaximunDrawdown, Trades, Trades, Trades) {
+    start_time: i64,
+) -> (
+    MaximunDrawdown,
+    Trades,
+    Trades,
+    Trades,
+    Vec<CumalativeReturn>,
+) {
     let mut cumalative_return = initial_capital;
-    let mut g = vec![cumalative_return];
+    let mut g = BTreeMap::from([(start_time / 1000, cumalative_return)]);
     for p in positions {
         if let Some(rel) = &p.realized {
             cumalative_return += rel.pnl;
-            g.push(cumalative_return);
+
+            g.entry(rel.exit_time / 1000)
+                .and_modify(|v| *v = cumalative_return)
+                .or_insert(cumalative_return);
         }
     }
 
-    let mut maximum_drawdown = f64::MAX;
-    let mut gt = None;
+    let g = g
+        .into_iter()
+        .map(|(time, value)| CumalativeReturn { time, value })
+        .collect::<Vec<_>>();
+
+    let mut maximum_drawdown = f64::MIN;
+    let mut gt = 0.0;
     for r in 0..g.len() {
         for t in 0..r {
-            let dd = g[t] - g[r];
-            if dd < 0.0 && dd < maximum_drawdown {
+            let dd = g[t].value - g[r].value;
+            if dd > 0.0 && dd > maximum_drawdown {
                 maximum_drawdown = dd;
-                gt = Some(g[t]);
+                gt = g[t].value;
             }
         }
     }
@@ -262,7 +304,7 @@ fn generate_report(
     (
         MaximunDrawdown {
             amount: maximum_drawdown,
-            percent: to_percent(maximum_drawdown, gt.unwrap()),
+            percent: to_percent(maximum_drawdown, gt),
         },
         Trades {
             pnl: profit_trades.0,
@@ -279,23 +321,21 @@ fn generate_report(
             pnl_percent: to_percent(total.0, initial_capital),
             trades: total.1,
         },
+        g,
     )
 }
 
-pub async fn run_backtest(
+pub async fn create_backtest_report(
     db: web::Data<Client>,
     request: BacktestRequest,
     user: &User,
     symbol: &String,
     interval: &Interval,
     preset: &String,
-) -> BacktestReport {
+) -> Result<BacktestReport, CustomError> {
     let ohlc_data = fetch_symbol(&db, symbol, &Some(interval.clone())).await;
-    let fuzzy_config = get_fuzzy_config(&db, &ohlc_data, preset, user).await;
-    let fuzzy_output = match fuzzy_config {
-        Ok(v) => fuzzy_indicator(&v.0, v.1),
-        Err(_) => todo!(),
-    };
+    let fuzzy_config = get_fuzzy_config(&db, &ohlc_data, preset, user).await?;
+    let fuzzy_output = fuzzy_indicator(&fuzzy_config.0, fuzzy_config.1);
 
     let valid_ohlc = ohlc_data
         .0
@@ -317,11 +357,8 @@ pub async fn run_backtest(
         request.capital,
     );
 
-    let (maximum_drawdown, profit_trades, loss_trades, total) =
-        generate_report(&positions, request.capital);
-
-    //let db_client = (*db).database(DB_NAME);
-    //let collection = db_client.collection("backtest-reports");
+    let (maximum_drawdown, profit_trades, loss_trades, total, cumalative_return) =
+        generate_report(&positions, request.capital, request.start_time);
 
     let backtest_result = BacktestResult {
         backtest_request: request,
@@ -329,14 +366,38 @@ pub async fn run_backtest(
         profit_trades,
         loss_trades,
         total,
-        run_at: Utc::now().timestamp_millis(),
+        cumalative_return,
     };
-
-    BacktestReport {
-        user: user.username.to_string(),
+    let result = BacktestReport {
+        username: user.username.to_string(),
         ticker: symbol.to_string(),
         interval: interval.to_owned(),
         fuzzy_preset: preset.to_string(),
         backtest_result,
-    }
+        run_at: Utc::now().timestamp_millis(),
+    };
+    let db_client = (*db).database(DB_NAME);
+    let collection = db_client.collection::<BacktestReport>(COLLECTION_NAME);
+    collection
+        .insert_one(result.clone(), None)
+        .await
+        .map_err(map_internal_err)?;
+
+    Ok(result)
+}
+
+pub async fn get_backtest_reports(
+    db: web::Data<Client>,
+    username: String,
+) -> Result<Vec<BacktestReport>, CustomError> {
+    let db_client = (*db).database(DB_NAME);
+    let collection = db_client.collection::<BacktestReport>(COLLECTION_NAME);
+
+    Ok(collection
+        .find(doc! { "username": username }, None)
+        .await
+        .map_err(map_internal_err)?
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(map_internal_err)?)
 }

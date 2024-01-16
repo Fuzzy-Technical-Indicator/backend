@@ -4,6 +4,7 @@ use core::error::CustomError;
 use core::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached, error::map_custom_err, fetch_symbol,
     fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings, stoch_cached,
+    backtest
 };
 use core::{users, Interval};
 
@@ -330,6 +331,41 @@ async fn get_user_setting(req: HttpRequest) -> ActixResult<HttpResponse> {
     Ok(HttpResponse::Ok().json(user))
 }
 
+#[post("/run")]
+async fn create_backtest_report(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    preset_query: web::Query<PresetQueryParam>,
+    backtest_request: web::Json<core::backtest::BacktestRequest>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    let symbol = &params.symbol;
+    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
+    let preset = &preset_query.preset;
+
+    let result = backtest::create_backtest_report(
+        db,
+        backtest_request.into_inner(),
+        &user,
+        symbol,
+        interval,
+        preset,
+    )
+    .await.map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().json(result))
+}
+
+#[get("")]
+async fn get_backtest_reports(db: web::Data<Client>, req: HttpRequest) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    let result = backtest::get_backtest_reports(db, user.username)
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().json(result))
+}
+
 fn is_user_exist(req: HttpRequest) -> Result<users::User, actix_web::Error> {
     if let Some(user) = req.extensions().get::<users::User>() {
         return Ok(user.clone());
@@ -364,32 +400,6 @@ async fn auth_validator(
         )),
         req,
     ))
-}
-
-#[post("/run")]
-async fn run_backtest(
-    db: web::Data<Client>,
-    params: web::Query<QueryParams>,
-    preset_query: web::Query<PresetQueryParam>,
-    backtest_request: web::Json<core::backtest::BacktestRequest>,
-    req: HttpRequest,
-) -> ActixResult<HttpResponse> {
-    let user = is_user_exist(req)?;
-    let symbol = &params.symbol;
-    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
-    let preset = &preset_query.preset;
-
-    let result = core::backtest::run_backtest(
-        db,
-        backtest_request.into_inner(),
-        &user,
-        symbol,
-        interval,
-        preset,
-    )
-    .await;
-
-    Ok(HttpResponse::Ok().json(result))
 }
 
 #[actix_web::main]
@@ -448,7 +458,8 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::scope("/api/backtesting")
                     .wrap(HttpAuthentication::bearer(auth_validator))
-                    .service(run_backtest),
+                    .service(create_backtest_report)
+                    .service(get_backtest_reports),
             )
             .service(web::scope("/api").service(ohlc).service(register))
     })
