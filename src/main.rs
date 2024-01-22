@@ -357,6 +357,27 @@ async fn create_backtest_report(
     Ok(HttpResponse::Ok().json(result))
 }
 
+#[post("/runrandom")]
+async fn create_random_backtest_report(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    backtest_request: web::Json<core::backtest::BacktestRequest>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let symbol = &params.symbol;
+    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
+
+    let result = backtest::create_random_backtest_report(
+        db,
+        backtest_request.into_inner(),
+        symbol,
+        interval,
+    )
+    .await;
+
+    Ok(HttpResponse::Ok().json(result))
+}
+
 #[get("")]
 async fn get_backtest_reports(db: web::Data<Client>, req: HttpRequest) -> ActixResult<HttpResponse> {
     let user = is_user_exist(req)?;
@@ -459,7 +480,8 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api/backtesting")
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(create_backtest_report)
-                    .service(get_backtest_reports),
+                    .service(get_backtest_reports)
+                    .service(create_random_backtest_report),
             )
             .service(web::scope("/api").service(ohlc).service(register))
     })
