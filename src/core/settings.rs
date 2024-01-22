@@ -67,15 +67,15 @@ pub struct SettingsDTO {
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ShapeModel {
-    parameters: BTreeMap<String, f64>,
-    shapeType: String,
+    pub parameters: BTreeMap<String, f64>,
+    pub shapeType: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct LinguisticVarModel {
-    upperBoundary: f64,
-    lowerBoundary: f64,
-    shapes: BTreeMap<String, ShapeModel>,
+    pub upperBoundary: f64,
+    pub lowerBoundary: f64,
+    pub shapes: BTreeMap<String, ShapeModel>,
     pub kind: LinguisticVarKind,
 }
 
@@ -168,6 +168,45 @@ pub struct LinguisticVarPresetModel {
     username: String,
     preset: String,
     pub vars: LinguisticVarsModel,
+}
+
+pub async fn fetch_setting(
+    db: &web::Data<Client>,
+    username: &String,
+    preset: &String,
+) -> Result<LinguisticVarPresetModel, CustomError> {
+    let setting_coll = get_setting_coll(db).await?;
+    let setting = match setting_coll
+        .find_one(doc! { "username": username, "preset": preset }, None)
+        .await
+        .map_err(map_internal_err)?
+    {
+        Some(doc) => doc,
+        None => return Err(CustomError::SettingsNotFound),
+    };
+
+    Ok(setting)
+}
+
+pub async fn fetch_fuzzy_rules(
+    db: &web::Data<Client>,
+    username: &String,
+    preset: &String,
+) -> Result<Vec<FuzzyRuleModel>, CustomError> {
+    let db_client = (*db).database(DB_NAME);
+    let rules_coll = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
+    let fuzzy_rules = rules_coll
+        .find(
+            doc! { "username": username, "preset": preset, "valid": true },
+            None,
+        )
+        .await
+        .map_err(map_internal_err)?
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(map_internal_err)?;
+
+    Ok(fuzzy_rules)
 }
 
 async fn get_rules_coll(

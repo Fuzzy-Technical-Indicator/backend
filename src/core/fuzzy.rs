@@ -1,19 +1,21 @@
 use actix_web::web;
-use futures::TryStreamExt;
+
 use fuzzy_logic::FuzzyEngine;
-use mongodb::{bson::doc, Client};
+use mongodb::{Client};
 
 use std::collections::BTreeMap;
 use tech_indicators::{DTValue, Ohlc};
 
 use super::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached,
-    error::{map_internal_err, CustomError},
+    error::{CustomError},
     macd_cached, obv_cached, rsi_cached,
-    settings::{get_setting_coll, FuzzyRuleModel, LinguisticVarKind, LinguisticVarPresetModel},
+    settings::{
+        fetch_fuzzy_rules, fetch_setting, FuzzyRuleModel, LinguisticVarKind,
+        LinguisticVarPresetModel,
+    },
     stoch_cached,
     users::User,
-    DB_NAME,
 };
 use rayon::prelude::*;
 
@@ -30,7 +32,7 @@ fn to_rule_params<'a>(
         .collect()
 }
 
-fn create_fuzzy_engine(
+pub fn create_fuzzy_engine(
     setting: &LinguisticVarPresetModel,
     fuzzy_rules: &Vec<FuzzyRuleModel>,
 ) -> FuzzyEngine {
@@ -155,7 +157,7 @@ fn transform_macd(macd: Vec<DTValue<(f64, f64, f64)>>) -> Vec<Option<f64>> {
         .collect()
 }
 
-fn create_input(
+pub fn create_input(
     setting: &LinguisticVarPresetModel,
     data: &(Vec<Ohlc>, String),
     user: &User,
@@ -228,30 +230,9 @@ pub async fn get_fuzzy_config(
     preset: &String,
     user: &User,
 ) -> Result<(FuzzyEngine, Vec<(i64, Vec<Option<f64>>)>), CustomError> {
-    let db_client = (*db).database(DB_NAME);
-    let setting_coll = get_setting_coll(db).await?;
-    let rules_coll = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
     let username = &user.username;
-
-    let setting = match setting_coll
-        .find_one(doc! { "username": username, "preset": preset }, None)
-        .await
-        .map_err(map_internal_err)?
-    {
-        Some(doc) => doc,
-        None => return Err(CustomError::SettingsNotFound),
-    };
-
-    let fuzzy_rules = rules_coll
-        .find(
-            doc! { "username": username, "preset": preset, "valid": true },
-            None,
-        )
-        .await
-        .map_err(map_internal_err)?
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(map_internal_err)?;
+    let setting = fetch_setting(db, username, preset).await?;
+    let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
 
     Ok((
         create_fuzzy_engine(&setting, &fuzzy_rules),
