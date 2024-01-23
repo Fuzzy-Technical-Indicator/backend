@@ -1,6 +1,7 @@
 use actix_web::web;
 use chrono::Utc;
-use mongodb::Client;
+use futures::{FutureExt, TryStreamExt};
+use mongodb::{bson::doc, options::IndexOptions, Client, Collection, IndexModel};
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, Ohlc};
 
@@ -19,7 +20,7 @@ use super::{
         FuzzyRuleModelWithOutId, LinguisticVarPresetModel, LinguisticVarsModel,
     },
     users::User,
-    Interval,
+    Interval, DB_NAME,
 };
 
 pub mod swarm;
@@ -35,8 +36,17 @@ pub struct Strategy {
 }
 
 #[derive(Deserialize, Serialize, Clone)]
+pub struct TrainProgress {
+    epoch: usize,
+    group: usize,
+    f: f64,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
 pub struct TrainResult {
-    train_progress: Vec<(usize, usize, f64)>,
+    username: String,
+    preset: String,
+    train_progress: Vec<TrainProgress>,
     validation_f: f64,
 }
 
@@ -133,6 +143,7 @@ async fn save_linguistic_vars_setting(
     data: LinguisticVarPresetModel,
 ) -> Result<(), CustomError> {
     let coll = get_setting_coll(db).await?;
+
     coll.insert_one(data, None)
         .await
         .map_err(map_internal_err)?;
@@ -157,9 +168,35 @@ async fn save_fuzzy_rules(
     Ok(())
 }
 
-/// custom objective function
+async fn get_train_result_coll(
+    db: &web::Data<Client>,
+) -> Result<Collection<TrainResult>, CustomError> {
+    let db_client = (*db).database(DB_NAME);
+    let coll = db_client.collection::<TrainResult>("pso-results");
+    let opts = IndexOptions::builder().unique(true).build();
+    let index = IndexModel::builder()
+        .keys(doc! { "username": 1, "preset": 1})
+        .options(opts)
+        .build();
+    coll.create_index(index, None)
+        .await
+        .map_err(map_internal_err)?;
+    Ok(coll)
+}
+
+async fn save_train_result(
+    db: &web::Data<Client>,
+    train_result: TrainResult,
+) -> Result<(), CustomError> {
+    let coll = get_train_result_coll(db).await?;
+    coll.insert_one(train_result, None)
+        .await
+        .map_err(map_internal_err)?;
+    Ok(())
+}
+
 fn objective_func(result: &BacktestResult) -> f64 {
-    -1.0 * (result.total.trades as f64 + result.total.pnl_percent - result.maximum_drawdown.percent)
+    -1.0 * (result.total.pnl_percent - result.maximum_drawdown.percent)
 }
 
 /// Using PSO to optimize linguistic variables
@@ -193,7 +230,7 @@ pub async fn linguistic_vars_optimization(
 
     // train on training period only
     let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.train_end_time);
-    let mut train_progress = vec![];
+    let mut train_progress: Vec<TrainProgress> = vec![];
     for i in 0..strat.epoch {
         for (k, g) in groups.iter_mut().enumerate() {
             for x in g.particles.iter_mut() {
@@ -219,7 +256,11 @@ pub async fn linguistic_vars_optimization(
                 x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
                 x.change_pos();
 
-                train_progress.push((i, k, f));
+                train_progress.push(TrainProgress {
+                    epoch: i,
+                    group: k,
+                    f,
+                });
             }
         }
     }
@@ -235,8 +276,6 @@ pub async fn linguistic_vars_optimization(
         .reduce(|best, ind| if best.f < ind.f { best } else { ind })
         .unwrap()
         .to_owned();
-
-    println!("{}", gbest.f);
 
     let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.validation_end_time);
     let validation_result = use_particle(
@@ -265,11 +304,29 @@ pub async fn linguistic_vars_optimization(
     .await?;
 
     save_fuzzy_rules(db, fuzzy_rules, &new_preset_name).await?;
-    setting.preset = new_preset_name;
+    setting.preset = new_preset_name.clone();
     save_linguistic_vars_setting(db, setting).await?;
 
-    Ok(TrainResult {
+    let train_result = TrainResult {
+        username: username.clone(),
+        preset: new_preset_name,
         train_progress,
         validation_f,
-    })
+    };
+    save_train_result(db, train_result.clone()).await?;
+    Ok(train_result)
+}
+
+pub async fn get_train_results(
+    db: &web::Data<Client>,
+    username: String,
+) -> Result<Vec<TrainResult>, CustomError> {
+    let coll = get_train_result_coll(db).await?;
+    Ok(coll
+        .find(doc! { "username": username}, None)
+        .await
+        .map_err(map_internal_err)?
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(map_internal_err)?)
 }

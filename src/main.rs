@@ -405,6 +405,15 @@ async fn run_pso(
 }
 
 #[get("")]
+async fn get_pso_result(db: web::Data<Client>, req: HttpRequest) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    let result = optimization::get_train_results(&db, user.username)
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().json(result))
+}
+
+#[get("")]
 async fn get_backtest_reports(
     db: web::Data<Client>,
     req: HttpRequest,
@@ -516,6 +525,7 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api/pso")
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(run_pso)
+                    .service(get_pso_result),
             )
             .service(web::scope("/api").service(ohlc).service(register))
     })
