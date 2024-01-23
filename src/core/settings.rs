@@ -147,18 +147,18 @@ pub struct FuzzyRuleModel {
     _id: String,
     pub input: FuzzyRuleData,
     pub output: FuzzyRuleData,
-    username: String,
-    preset: String,
-    valid: bool,
+    pub username: String,
+    pub preset: String,
+    pub valid: bool,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct FuzzyRuleModelWithOutId {
-    input: FuzzyRuleData,
-    output: FuzzyRuleData,
-    username: String,
-    preset: String,
-    valid: bool,
+    pub input: FuzzyRuleData,
+    pub output: FuzzyRuleData,
+    pub username: String,
+    pub preset: String,
+    pub valid: bool,
 }
 
 pub type LinguisticVarsModel = BTreeMap<String, LinguisticVarModel>;
@@ -166,7 +166,7 @@ pub type LinguisticVarsModel = BTreeMap<String, LinguisticVarModel>;
 #[derive(Deserialize, Serialize)]
 pub struct LinguisticVarPresetModel {
     username: String,
-    preset: String,
+    pub preset: String,
     pub vars: LinguisticVarsModel,
 }
 
@@ -209,14 +209,14 @@ pub async fn fetch_fuzzy_rules(
     Ok(fuzzy_rules)
 }
 
-async fn get_rules_coll(
+pub async fn get_rules_coll(
     db: &web::Data<Client>,
 ) -> Result<Collection<FuzzyRuleModelWithOutId>, CustomError> {
     let db_client = (*db).database(DB_NAME);
     let rules_coll = db_client.collection::<FuzzyRuleModelWithOutId>("fuzzy-rules");
     let opts = IndexOptions::builder().unique(true).build();
     let index = IndexModel::builder()
-        .keys(doc! { "input": 1, "output": 1, "username": 1})
+        .keys(doc! { "input": 1, "output": 1, "username": 1, "preset": 1})
         .options(opts)
         .build();
     rules_coll

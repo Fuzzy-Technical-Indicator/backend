@@ -63,31 +63,6 @@ pub fn gen_rho(c: f64) -> f64 {
     dist.sample(&mut rand) * c
 }
 
-/*
-/// Create inital particles of MLP from layers
-///
-/// return: particles
-pub fn init_particles(net: &Net, amount: u32) -> Vec<Individual> {
-    let mut inidividuals: Vec<Individual> = vec![];
-    for _ in 0..amount {
-        let mut position: Vec<f64> = Vec::with_capacity(net.parameters as usize);
-        for l in net.layers.iter() {
-            for output in l.w.iter() {
-                for _ in output.iter() {
-                    // new random weight in range [-1, 1]
-                    position.push(2f64 * rand::random::<f64>() - 1f64);
-                }
-            }
-            for bias in l.b.iter() {
-                position.push(*bias);
-            }
-        }
-        inidividuals.push(Individual::new(position));
-    }
-    inidividuals
-}
-*/
-
 pub struct IndividualGroup {
     pub particles: Vec<Individual>,
     pub lbest_f: f64,
@@ -99,22 +74,6 @@ impl IndividualGroup {
         self.particles.push(individual);
     }
 }
-
-/*
-pub fn init_particles_group(net: &Net, group: usize, group_size: u32) -> Vec<IndividualGroup> {
-    (0..group)
-        .into_iter()
-        .map(|_| {
-            let particles = init_particles(&net, group_size + 1);
-            IndividualGroup {
-                particles: particles[1..].into(),
-                lbest_f: f64::MAX,
-                lbest_pos: particles[0].position.clone(),
-            }
-        })
-        .collect()
-}
-*/
 
 #[cfg(test)]
 mod tests {

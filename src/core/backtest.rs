@@ -4,7 +4,7 @@ use crate::core::Interval;
 use actix_web::web;
 use chrono::Utc;
 use futures::TryStreamExt;
-use mongodb::{bson::doc, Client};
+use mongodb::{bson::doc, options::FindOptions, Client};
 use rand::distributions::{Distribution, Uniform};
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
@@ -13,8 +13,9 @@ use super::{
     error::{map_internal_err, CustomError},
     fetch_symbol,
     fuzzy::get_fuzzy_config,
+    optimization::Strategy,
     users::User,
-    DB_NAME, optimization::Strategy,
+    DB_NAME,
 };
 
 const COLLECTION_NAME: &str = "backtest-reports";
@@ -97,7 +98,7 @@ pub struct BacktestRequest {
 pub struct Trades {
     pnl: f64,
     pub pnl_percent: f64,
-    trades: i64,
+    pub trades: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -125,7 +126,7 @@ pub struct BacktestResult {
 #[serde(tag = "tag")]
 pub enum BacktestMetadata {
     NormalBackTest(BacktestRequest),
-    PsoBackTest(Strategy)
+    PsoBackTest(Strategy),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -312,8 +313,8 @@ pub fn backtest(
                 // if we enter a position, determine the size of the position and enter it
                 // maybe we can many methods of position sizing
                 let entry_amount = (((condition.money_management.entry_size_percent / 100.0)
-                    * condition.money_management.min_entry_size)
-                    .max(100f64))
+                    * working_capital)
+                    .max(condition.money_management.min_entry_size))
                 .min(working_capital);
 
                 working_capital -= entry_amount;
@@ -360,8 +361,8 @@ pub fn generate_report(
         .map(|(time, value)| CumalativeReturn { time, value })
         .collect::<Vec<_>>();
 
-    let mut maximum_drawdown = f64::MIN;
-    let mut gt = f64::MIN;
+    let mut maximum_drawdown = 0.0;
+    let mut gt = 1.0;
     for r in 0..g.len() {
         for t in 0..r {
             let dd = g[t].value - g[r].value;
@@ -483,9 +484,9 @@ pub async fn get_backtest_reports(
 ) -> Result<Vec<BacktestReport>, CustomError> {
     let db_client = (*db).database(DB_NAME);
     let collection = db_client.collection::<BacktestReport>(COLLECTION_NAME);
-
+    let find_options = FindOptions::builder().sort(doc! { "run_at": - 1}).build();
     collection
-        .find(doc! { "username": username }, None)
+        .find(doc! { "username": username }, find_options)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()

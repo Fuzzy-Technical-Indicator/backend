@@ -34,7 +34,7 @@ fn to_rule_params<'a>(
 
 pub fn create_fuzzy_engine(
     setting: &LinguisticVarPresetModel,
-    fuzzy_rules: &Vec<FuzzyRuleModel>,
+    fuzzy_rules: &[FuzzyRuleModel],
 ) -> FuzzyEngine {
     let mut fuzzy_engine = FuzzyEngine::new();
 

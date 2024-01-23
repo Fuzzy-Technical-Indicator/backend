@@ -25,6 +25,12 @@ pub enum CustomError {
     #[error("User {0} is not found")]
     UserNotFound(String),
 
+    #[error("Expect atleast one signal condition")]
+    ExpectAtlestOneSignalCondition,
+
+    #[error("The time range given is invalid")]
+    InvalidTimeRange,
+
     #[error("{0}")]
     InternalError(String),
 }
@@ -42,7 +48,9 @@ pub fn map_custom_err(e: CustomError) -> actix_web::Error {
         | RuleNotFound(_)
         | LinguisticVarNotFound(_)
         | LinguisticVarShapeNotFound(_) => ErrorNotFound(e.to_string()),
-        RuleAlreadyExist | RuleNotValid => ErrorBadRequest(e.to_string()),
+        RuleAlreadyExist | RuleNotValid | InvalidTimeRange | ExpectAtlestOneSignalCondition => {
+            ErrorBadRequest(e.to_string())
+        }
         UserNotFound(_) => ErrorUnauthorized(e.to_string()),
         _ => ErrorInternalServerError(e.to_string()),
     }
