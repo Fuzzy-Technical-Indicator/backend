@@ -413,6 +413,17 @@ async fn get_pso_result(db: web::Data<Client>, req: HttpRequest) -> ActixResult<
     Ok(HttpResponse::Ok().json(result))
 }
 
+#[delete("/{id}")]
+async fn delete_pso_result(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    optimization::delete_train_result(&db, path.into_inner())
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().into())
+}
+
 #[get("")]
 async fn get_backtest_reports(
     db: web::Data<Client>,
@@ -423,6 +434,28 @@ async fn get_backtest_reports(
         .await
         .map_err(map_custom_err)?;
     Ok(HttpResponse::Ok().json(result))
+}
+
+#[get("/{id}")]
+async fn get_backtest_report(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let result = backtest::get_backtest_report(&db, path.into_inner())
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().json(result))
+}
+
+#[delete("/{id}")]
+async fn delete_backtest_report(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    backtest::delete_backtest_report(&db, path.into_inner())
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().into())
 }
 
 fn is_user_exist(req: HttpRequest) -> Result<users::User, actix_web::Error> {
@@ -519,12 +552,15 @@ async fn main() -> std::io::Result<()> {
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(create_backtest_report)
                     .service(get_backtest_reports)
+                    .service(get_backtest_report)
+                    .service(delete_backtest_report)
                     .service(create_random_backtest_report),
             )
             .service(
                 web::scope("/api/pso")
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(run_pso)
+                    .service(delete_pso_result)
                     .service(get_pso_result),
             )
             .service(web::scope("/api").service(ohlc).service(register))

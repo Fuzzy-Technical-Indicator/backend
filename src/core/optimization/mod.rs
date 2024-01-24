@@ -1,7 +1,13 @@
+use std::str::FromStr;
+
 use actix_web::web;
 use chrono::Utc;
-use futures::{FutureExt, TryStreamExt};
-use mongodb::{bson::doc, options::IndexOptions, Client, Collection, IndexModel};
+use futures::TryStreamExt;
+use mongodb::{
+    bson::{doc, oid, serde_helpers::deserialize_hex_string_from_object_id},
+    options::{FindOptions, IndexOptions},
+    Client, Collection, IndexModel,
+};
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, Ohlc};
 
@@ -46,9 +52,26 @@ pub struct TrainProgress {
 pub struct TrainResult {
     username: String,
     preset: String,
+    backtest_id: String,
     train_progress: Vec<TrainProgress>,
     validation_f: f64,
+    start_time: i64,
+    train_end_time: i64,
+    validation_end_time: i64,
+    run_at: i64,
 }
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct TrainResultWithId {
+    #[serde(flatten)]
+    traint_result: TrainResult,
+    #[serde(deserialize_with = "deserialize_hex_string_from_object_id")]
+    _id: String,
+}
+
+pub trait IsTrainResult {}
+impl IsTrainResult for TrainResult {}
+impl IsTrainResult for TrainResultWithId {}
 
 fn to_particle(linguistic_vars: &LinguisticVarsModel) -> Vec<f64> {
     let particle_pos = linguistic_vars
@@ -64,11 +87,11 @@ fn to_particle(linguistic_vars: &LinguisticVarsModel) -> Vec<f64> {
 }
 
 fn create_particle_groups(
-    start_pos: Vec<f64>,
+    start_pos: &[f64],
     group: usize,
     group_size: usize,
 ) -> Vec<IndividualGroup> {
-    let particle = Individual::new(start_pos);
+    let particle = Individual::new(start_pos.to_vec());
     let particles = vec![particle; group_size + 1];
 
     (0..group)
@@ -89,16 +112,20 @@ fn from_particle(
     let mut i = 0;
     for (_, l) in copied.iter_mut() {
         for (_, s) in l.shapes.iter_mut() {
-            for (_k, v) in s.parameters.iter_mut() {
-                // this is super ugly, and hard coded
-                /* if we want to enforce some constraints on some parameter
-                if s.shapeType == "triangle" && k == "height" {
-                    *v = particle_pos[i].min(1.0).max(0.0);
-                } else {
-                    *v = particle_pos[i];
+            for (k, v) in s.parameters.iter_mut() {
+                /*
+                 * this is super ugly, and hard coded
+                 * if we want to enforce some constraints on some parameter
+                 */
+                match (s.shapeType.as_str(), k.as_str()) {
+                    (_, "height") => {
+                        *v = particle_pos[i].min(1.0).max(0.0);
+                    }
+                    (_, _) => {
+                        *v = particle_pos[i];
+                    }
                 }
-                */
-                *v = particle_pos[i];
+                //*v = particle_pos[i];
                 i += 1; // this is kind of bad
             }
         }
@@ -168,11 +195,11 @@ async fn save_fuzzy_rules(
     Ok(())
 }
 
-async fn get_train_result_coll(
+async fn get_train_result_coll<T: IsTrainResult>(
     db: &web::Data<Client>,
-) -> Result<Collection<TrainResult>, CustomError> {
+) -> Result<Collection<T>, CustomError> {
     let db_client = (*db).database(DB_NAME);
-    let coll = db_client.collection::<TrainResult>("pso-results");
+    let coll = db_client.collection::<T>("pso-results");
     let opts = IndexOptions::builder().unique(true).build();
     let index = IndexModel::builder()
         .keys(doc! { "username": 1, "preset": 1})
@@ -195,8 +222,18 @@ async fn save_train_result(
     Ok(())
 }
 
-fn objective_func(result: &BacktestResult) -> f64 {
-    -1.0 * (result.total.pnl_percent - result.maximum_drawdown.percent)
+fn objective_func(result: &BacktestResult, reference: &BacktestResult) -> f64 {
+    let profit_change = result.total.pnl_percent - reference.total.pnl_percent;
+    let mdd_change = result.maximum_drawdown.percent - reference.maximum_drawdown.percent;
+
+    -1.0 * (profit_change + mdd_change)
+    /*
+    let profit_trades_p = 100.0 * (result.profit_trades.trades as f64 / p_trades);
+    let loss_trades_p = 10.0 * (result.loss_trades.trades as f64 / l_trades);
+    -1.0 * (profit_trades_p + result.total.pnl_percent
+        - result.maximum_drawdown.percent
+        - loss_trades_p)
+    */
 }
 
 /// Using PSO to optimize linguistic variables
@@ -225,11 +262,21 @@ pub async fn linguistic_vars_optimization(
     // set initial values for each individual
     let fuzzy_inputs = create_input(&setting, &data, user);
 
-    let start_pos = to_particle(&setting.vars);
-    let mut groups = create_particle_groups(start_pos, 1, 5);
+    let mut start_pos = to_particle(&setting.vars);
+    let mut groups = create_particle_groups(&start_pos, 1, 5);
 
     // train on training period only
     let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.train_end_time);
+    let first_run_train = use_particle(
+        &mut setting,
+        &mut start_pos,
+        &strat,
+        &valid_ohlc,
+        &fuzzy_rules,
+        fuzzy_inputs.clone(),
+        false,
+    );
+
     let mut train_progress: Vec<TrainProgress> = vec![];
     for i in 0..strat.epoch {
         for (k, g) in groups.iter_mut().enumerate() {
@@ -244,7 +291,7 @@ pub async fn linguistic_vars_optimization(
                     false,
                 );
 
-                let f = objective_func(&r);
+                let f = objective_func(&r, &first_run_train);
                 if f < x.f {
                     x.f = f;
                     x.best_pos = x.position.clone();
@@ -265,22 +312,24 @@ pub async fn linguistic_vars_optimization(
         }
     }
 
-    let best_group = groups
-        .iter()
+    let mut best_group = groups
+        .into_iter()
         .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
         .unwrap();
-
-    let mut gbest = best_group
-        .particles
-        .iter()
-        .reduce(|best, ind| if best.f < ind.f { best } else { ind })
-        .unwrap()
-        .to_owned();
 
     let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.validation_end_time);
     let validation_result = use_particle(
         &mut setting,
-        &mut gbest.position,
+        &mut best_group.lbest_pos,
+        &strat,
+        &valid_ohlc,
+        &fuzzy_rules,
+        fuzzy_inputs.clone(),
+        true,
+    );
+    let first_run_validation = use_particle(
+        &mut setting,
+        &mut start_pos,
         &strat,
         &valid_ohlc,
         &fuzzy_rules,
@@ -288,9 +337,10 @@ pub async fn linguistic_vars_optimization(
         true,
     );
 
-    let validation_f = objective_func(&validation_result);
+    let validation_f = objective_func(&validation_result, &first_run_validation);
     let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
-    save_backtest_report(
+    let run_at = Utc::now().timestamp_millis();
+    let (_, backtest_id) = save_backtest_report(
         db,
         username,
         symbol,
@@ -298,8 +348,9 @@ pub async fn linguistic_vars_optimization(
         &new_preset_name,
         BacktestResultWithRequest {
             result: validation_result,
-            metadata: BacktestMetadata::PsoBackTest(strat),
+            metadata: BacktestMetadata::PsoBackTest(strat.clone()),
         },
+        run_at,
     )
     .await?;
 
@@ -311,7 +362,12 @@ pub async fn linguistic_vars_optimization(
         username: username.clone(),
         preset: new_preset_name,
         train_progress,
+        backtest_id,
         validation_f,
+        start_time: strat.start_time,
+        train_end_time: strat.train_end_time,
+        validation_end_time: strat.validation_end_time,
+        run_at,
     };
     save_train_result(db, train_result.clone()).await?;
     Ok(train_result)
@@ -320,13 +376,29 @@ pub async fn linguistic_vars_optimization(
 pub async fn get_train_results(
     db: &web::Data<Client>,
     username: String,
-) -> Result<Vec<TrainResult>, CustomError> {
+) -> Result<Vec<TrainResultWithId>, CustomError> {
     let coll = get_train_result_coll(db).await?;
+    let find_options = FindOptions::builder().sort(doc! { "run_at": - 1}).build();
     Ok(coll
-        .find(doc! { "username": username}, None)
+        .find(doc! { "username": username}, find_options)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()
         .await
         .map_err(map_internal_err)?)
+}
+
+pub async fn delete_train_result(db: &web::Data<Client>, id: String) -> Result<(), CustomError> {
+    let coll = get_train_result_coll::<TrainResultWithId>(db).await?;
+    let obj_id = oid::ObjectId::from_str(&id).map_err(map_internal_err)?;
+
+    let result = coll
+        .delete_one(doc! {"_id": obj_id}, None)
+        .await
+        .map_err(map_internal_err)?;
+
+    if result.deleted_count == 0 {
+        return Err(CustomError::TrainResultNotFound);
+    }
+    Ok(())
 }

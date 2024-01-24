@@ -163,7 +163,7 @@ pub struct FuzzyRuleModelWithOutId {
 
 pub type LinguisticVarsModel = BTreeMap<String, LinguisticVarModel>;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct LinguisticVarPresetModel {
     username: String,
     pub preset: String,
@@ -406,7 +406,10 @@ pub async fn add_fuzzy_rules(
     let setting_coll = get_setting_coll(&db).await?;
 
     let doc_opt = setting_coll
-        .find_one(doc! { "username": username, "preset": preset }, None)
+        .find_one(
+            doc! { "username": username.clone(), "preset": preset },
+            None,
+        )
         .await
         .map_err(|_| CustomError::SettingsNotFound)?;
 
@@ -434,7 +437,7 @@ pub async fn add_fuzzy_rules(
     let data = FuzzyRuleModelWithOutId {
         input: rule.input.clone(),
         output: rule.output.clone(),
-        username: "tanat".to_string(),
+        username,
         valid: true,
         preset: preset.clone(),
     };

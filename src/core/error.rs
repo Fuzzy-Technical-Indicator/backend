@@ -25,6 +25,12 @@ pub enum CustomError {
     #[error("User {0} is not found")]
     UserNotFound(String),
 
+    #[error("Backtest report with the given id was not found")]
+    BacktestReportNotFound,
+
+    #[error("Train result with the given id was not found")]
+    TrainResultNotFound,
+
     #[error("Expect atleast one signal condition")]
     ExpectAtlestOneSignalCondition,
 
@@ -47,7 +53,9 @@ pub fn map_custom_err(e: CustomError) -> actix_web::Error {
         SettingsNotFound
         | RuleNotFound(_)
         | LinguisticVarNotFound(_)
-        | LinguisticVarShapeNotFound(_) => ErrorNotFound(e.to_string()),
+        | LinguisticVarShapeNotFound(_)
+        | BacktestReportNotFound
+        | TrainResultNotFound => ErrorNotFound(e.to_string()),
         RuleAlreadyExist | RuleNotValid | InvalidTimeRange | ExpectAtlestOneSignalCondition => {
             ErrorBadRequest(e.to_string())
         }

@@ -1,10 +1,14 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, str::FromStr};
 
 use crate::core::Interval;
 use actix_web::web;
 use chrono::Utc;
 use futures::TryStreamExt;
-use mongodb::{bson::doc, options::FindOptions, Client};
+use mongodb::{
+    bson::{doc, oid, serde_helpers::deserialize_hex_string_from_object_id},
+    options::FindOptions,
+    Client, Collection,
+};
 use rand::distributions::{Distribution, Uniform};
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
@@ -146,6 +150,19 @@ pub struct BacktestReport {
     run_at: i64,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BacktestReportWithId {
+    #[serde(deserialize_with = "deserialize_hex_string_from_object_id")]
+    _id: String,
+    #[serde(flatten)]
+    backtest_report: BacktestReport,
+}
+
+pub trait IsBacktestReport {}
+
+impl IsBacktestReport for BacktestReport {}
+impl IsBacktestReport for BacktestReportWithId {}
+
 pub trait GetTime {
     fn get_time(&self) -> i64;
 }
@@ -166,6 +183,11 @@ impl<T> GetTime for DTValue<T> {
 
 fn to_percent(x: f64, y: f64) -> f64 {
     (x / y) * 100.0
+}
+
+pub fn get_backtest_coll<T: IsBacktestReport>(db: &web::Data<Client>) -> Collection<T> {
+    let db_client = (*db).database(DB_NAME);
+    db_client.collection::<T>(COLLECTION_NAME)
 }
 
 pub fn get_valid_data<T: GetTime>(data: Vec<T>, start_time: i64, end_time: i64) -> Vec<T> {
@@ -421,23 +443,30 @@ pub async fn save_backtest_report(
     interval: &Interval,
     preset: &String,
     backtest_result: BacktestResultWithRequest,
-) -> Result<BacktestReport, CustomError> {
+    run_at: i64,
+) -> Result<(BacktestReport, String), CustomError> {
     let result = BacktestReport {
         username: username.to_string(),
         ticker: symbol.to_string(),
         interval: interval.to_owned(),
         fuzzy_preset: preset.to_string(),
         backtest_result,
-        run_at: Utc::now().timestamp_millis(),
+        run_at,
     };
-    let db_client = (*db).database(DB_NAME);
-    let collection = db_client.collection::<BacktestReport>(COLLECTION_NAME);
-    collection
+    let collection = get_backtest_coll(db);
+    let inserted_result = collection
         .insert_one(result.clone(), None)
         .await
         .map_err(map_internal_err)?;
 
-    Ok(result)
+    Ok((
+        result,
+        inserted_result
+            .inserted_id
+            .as_object_id()
+            .unwrap()
+            .to_string(),
+    ))
 }
 
 pub async fn create_backtest_report(
@@ -467,23 +496,25 @@ pub async fn create_backtest_report(
         metadata: BacktestMetadata::NormalBackTest(request),
     };
 
-    save_backtest_report(
+    let run_at = Utc::now().timestamp_millis();
+    Ok(save_backtest_report(
         &db,
         &user.username,
         symbol,
         interval,
         preset,
         backtest_result,
+        run_at,
     )
-    .await
+    .await?
+    .0)
 }
 
 pub async fn get_backtest_reports(
     db: web::Data<Client>,
     username: String,
-) -> Result<Vec<BacktestReport>, CustomError> {
-    let db_client = (*db).database(DB_NAME);
-    let collection = db_client.collection::<BacktestReport>(COLLECTION_NAME);
+) -> Result<Vec<BacktestReportWithId>, CustomError> {
+    let collection = get_backtest_coll(&db);
     let find_options = FindOptions::builder().sort(doc! { "run_at": - 1}).build();
     collection
         .find(doc! { "username": username }, find_options)
@@ -492,6 +523,34 @@ pub async fn get_backtest_reports(
         .try_collect::<Vec<_>>()
         .await
         .map_err(map_internal_err)
+}
+
+pub async fn get_backtest_report(
+    db: &web::Data<Client>,
+    id: String,
+) -> Result<BacktestReportWithId, CustomError> {
+    let collection = get_backtest_coll::<BacktestReportWithId>(db);
+    let obj_id = oid::ObjectId::from_str(&id).map_err(map_internal_err)?;
+    collection
+        .find_one(doc! { "_id": obj_id }, None)
+        .await
+        .map_err(map_internal_err)?
+        .ok_or(CustomError::BacktestReportNotFound)
+}
+
+pub async fn delete_backtest_report(db: &web::Data<Client>, id: String) -> Result<(), CustomError> {
+    let collection = get_backtest_coll::<BacktestReportWithId>(db);
+    let obj_id = oid::ObjectId::from_str(&id).map_err(map_internal_err)?;
+
+    let result = collection
+        .delete_one(doc! { "_id": obj_id }, None)
+        .await
+        .map_err(map_internal_err)?;
+
+    if result.deleted_count == 0 {
+        return Err(CustomError::BacktestReportNotFound);
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Clone)]
