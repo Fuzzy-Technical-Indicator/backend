@@ -67,15 +67,15 @@ pub struct SettingsDTO {
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ShapeModel {
-    parameters: BTreeMap<String, f64>,
-    shapeType: String,
+    pub parameters: BTreeMap<String, f64>,
+    pub shapeType: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct LinguisticVarModel {
-    upperBoundary: f64,
-    lowerBoundary: f64,
-    shapes: BTreeMap<String, ShapeModel>,
+    pub upperBoundary: f64,
+    pub lowerBoundary: f64,
+    pub shapes: BTreeMap<String, ShapeModel>,
     pub kind: LinguisticVarKind,
 }
 
@@ -147,37 +147,76 @@ pub struct FuzzyRuleModel {
     _id: String,
     pub input: FuzzyRuleData,
     pub output: FuzzyRuleData,
-    username: String,
-    preset: String,
-    valid: bool,
+    pub username: String,
+    pub preset: String,
+    pub valid: bool,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct FuzzyRuleModelWithOutId {
-    input: FuzzyRuleData,
-    output: FuzzyRuleData,
-    username: String,
-    preset: String,
-    valid: bool,
+    pub input: FuzzyRuleData,
+    pub output: FuzzyRuleData,
+    pub username: String,
+    pub preset: String,
+    pub valid: bool,
 }
 
 pub type LinguisticVarsModel = BTreeMap<String, LinguisticVarModel>;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct LinguisticVarPresetModel {
     username: String,
-    preset: String,
+    pub preset: String,
     pub vars: LinguisticVarsModel,
 }
 
-async fn get_rules_coll(
+pub async fn fetch_setting(
+    db: &web::Data<Client>,
+    username: &String,
+    preset: &String,
+) -> Result<LinguisticVarPresetModel, CustomError> {
+    let setting_coll = get_setting_coll(db).await?;
+    let setting = match setting_coll
+        .find_one(doc! { "username": username, "preset": preset }, None)
+        .await
+        .map_err(map_internal_err)?
+    {
+        Some(doc) => doc,
+        None => return Err(CustomError::SettingsNotFound),
+    };
+
+    Ok(setting)
+}
+
+pub async fn fetch_fuzzy_rules(
+    db: &web::Data<Client>,
+    username: &String,
+    preset: &String,
+) -> Result<Vec<FuzzyRuleModel>, CustomError> {
+    let db_client = (*db).database(DB_NAME);
+    let rules_coll = db_client.collection::<FuzzyRuleModel>("fuzzy-rules");
+    let fuzzy_rules = rules_coll
+        .find(
+            doc! { "username": username, "preset": preset, "valid": true },
+            None,
+        )
+        .await
+        .map_err(map_internal_err)?
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(map_internal_err)?;
+
+    Ok(fuzzy_rules)
+}
+
+pub async fn get_rules_coll(
     db: &web::Data<Client>,
 ) -> Result<Collection<FuzzyRuleModelWithOutId>, CustomError> {
     let db_client = (*db).database(DB_NAME);
     let rules_coll = db_client.collection::<FuzzyRuleModelWithOutId>("fuzzy-rules");
     let opts = IndexOptions::builder().unique(true).build();
     let index = IndexModel::builder()
-        .keys(doc! { "input": 1, "output": 1, "username": 1})
+        .keys(doc! { "input": 1, "output": 1, "username": 1, "preset": 1})
         .options(opts)
         .build();
     rules_coll
@@ -367,7 +406,10 @@ pub async fn add_fuzzy_rules(
     let setting_coll = get_setting_coll(&db).await?;
 
     let doc_opt = setting_coll
-        .find_one(doc! { "username": username, "preset": preset }, None)
+        .find_one(
+            doc! { "username": username.clone(), "preset": preset },
+            None,
+        )
         .await
         .map_err(|_| CustomError::SettingsNotFound)?;
 
@@ -395,7 +437,7 @@ pub async fn add_fuzzy_rules(
     let data = FuzzyRuleModelWithOutId {
         input: rule.input.clone(),
         output: rule.output.clone(),
-        username: "tanat".to_string(),
+        username,
         valid: true,
         preset: preset.clone(),
     };

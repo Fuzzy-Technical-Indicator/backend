@@ -2,9 +2,9 @@ pub mod core;
 
 use core::error::CustomError;
 use core::{
-    accum_dist_cached, adx_cached, aroon_cached, bb_cached, error::map_custom_err, fetch_symbol,
-    fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, rsi_cached, settings, stoch_cached,
-    backtest
+    accum_dist_cached, adx_cached, aroon_cached, backtest, bb_cached, error::map_custom_err,
+    fetch_symbol, fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, optimization, rsi_cached,
+    settings, stoch_cached,
 };
 use core::{users, Interval};
 
@@ -23,7 +23,6 @@ use actix_web_httpauth::middleware::HttpAuthentication;
 use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
-
 
 #[derive(Deserialize)]
 struct QueryParams {
@@ -336,7 +335,7 @@ async fn create_backtest_report(
     db: web::Data<Client>,
     params: web::Query<QueryParams>,
     preset_query: web::Query<PresetQueryParam>,
-    backtest_request: web::Json<core::backtest::BacktestRequest>,
+    backtest_request: web::Json<backtest::BacktestRequest>,
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
     let user = is_user_exist(req)?;
@@ -352,18 +351,111 @@ async fn create_backtest_report(
         interval,
         preset,
     )
-    .await.map_err(map_custom_err)?;
+    .await
+    .map_err(map_custom_err)?;
+
+    Ok(HttpResponse::Ok().json(result))
+}
+
+#[post("/runrandom")]
+async fn create_random_backtest_report(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    backtest_request: web::Json<backtest::BacktestRequest>,
+) -> ActixResult<HttpResponse> {
+    let symbol = &params.symbol;
+    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
+
+    let result = backtest::create_random_backtest_report(
+        db,
+        backtest_request.into_inner(),
+        symbol,
+        interval,
+    )
+    .await;
+
+    Ok(HttpResponse::Ok().json(result))
+}
+
+#[post("/run")]
+async fn run_pso(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    preset_query: web::Query<PresetQueryParam>,
+    strat: web::Json<optimization::Strategy>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    let symbol = &params.symbol;
+    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
+    let preset = &preset_query.preset;
+
+    let result = optimization::linguistic_vars_optimization(
+        &db,
+        symbol,
+        interval,
+        preset,
+        &user,
+        strat.into_inner(),
+    )
+    .await
+    .map_err(map_custom_err)?;
 
     Ok(HttpResponse::Ok().json(result))
 }
 
 #[get("")]
-async fn get_backtest_reports(db: web::Data<Client>, req: HttpRequest) -> ActixResult<HttpResponse> {
+async fn get_pso_result(db: web::Data<Client>, req: HttpRequest) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    let result = optimization::get_train_results(&db, user.username)
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().json(result))
+}
+
+#[delete("/{id}")]
+async fn delete_pso_result(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    optimization::delete_train_result(&db, path.into_inner())
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().into())
+}
+
+#[get("")]
+async fn get_backtest_reports(
+    db: web::Data<Client>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
     let user = is_user_exist(req)?;
     let result = backtest::get_backtest_reports(db, user.username)
         .await
         .map_err(map_custom_err)?;
     Ok(HttpResponse::Ok().json(result))
+}
+
+#[get("/{id}")]
+async fn get_backtest_report(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    let result = backtest::get_backtest_report(&db, path.into_inner())
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().json(result))
+}
+
+#[delete("/{id}")]
+async fn delete_backtest_report(
+    db: web::Data<Client>,
+    path: web::Path<String>,
+) -> ActixResult<HttpResponse> {
+    backtest::delete_backtest_report(&db, path.into_inner())
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().into())
 }
 
 fn is_user_exist(req: HttpRequest) -> Result<users::User, actix_web::Error> {
@@ -459,7 +551,17 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api/backtesting")
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(create_backtest_report)
-                    .service(get_backtest_reports),
+                    .service(get_backtest_reports)
+                    .service(get_backtest_report)
+                    .service(delete_backtest_report)
+                    .service(create_random_backtest_report),
+            )
+            .service(
+                web::scope("/api/pso")
+                    .wrap(HttpAuthentication::bearer(auth_validator))
+                    .service(run_pso)
+                    .service(delete_pso_result)
+                    .service(get_pso_result),
             )
             .service(web::scope("/api").service(ohlc).service(register))
     })

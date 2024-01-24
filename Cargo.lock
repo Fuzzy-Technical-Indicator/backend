@@ -312,6 +312,7 @@ dependencies = [
  "futures",
  "fuzzy_logic",
  "mongodb",
+ "rand",
  "rayon",
  "serde",
  "serde_json",

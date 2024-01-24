@@ -1,10 +1,15 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, str::FromStr};
 
 use crate::core::Interval;
 use actix_web::web;
 use chrono::Utc;
 use futures::TryStreamExt;
-use mongodb::{bson::doc, Client};
+use mongodb::{
+    bson::{doc, oid, serde_helpers::deserialize_hex_string_from_object_id},
+    options::FindOptions,
+    Client, Collection,
+};
+use rand::distributions::{Distribution, Uniform};
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
 
@@ -12,6 +17,7 @@ use super::{
     error::{map_internal_err, CustomError},
     fetch_symbol,
     fuzzy::get_fuzzy_config,
+    optimization::Strategy,
     users::User,
     DB_NAME,
 };
@@ -19,7 +25,7 @@ use super::{
 const COLLECTION_NAME: &str = "backtest-reports";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-enum PosType {
+pub enum PosType {
     #[serde(rename = "long")]
     Long,
     #[serde(rename = "short")]
@@ -27,14 +33,14 @@ enum PosType {
 }
 
 #[derive(Debug)]
-struct RealizedInfo {
+pub struct RealizedInfo {
     pnl: f64,
     exit_price: f64,
     exit_time: i64,
 }
 
 #[derive(Debug)]
-struct Position {
+pub struct Position {
     enter_price: f64,
     enter_time: i64,
     amount: f64,
@@ -68,11 +74,18 @@ impl Position {
 }
 
 #[derive(Deserialize, Serialize, Clone)]
-struct SignalCondition {
+pub struct CapitalManagement {
+    entry_size_percent: f64,
+    min_entry_size: f64,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct SignalCondition {
     signal_index: u64,
     signal_threshold: f64,
     signal_do_command: PosType,
-    entry_size_percent: f64,
+    #[serde(flatten)]
+    money_management: CapitalManagement,
     take_profit_when: f64,
     stop_loss_when: f64,
 }
@@ -88,14 +101,14 @@ pub struct BacktestRequest {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Trades {
     pnl: f64,
-    pnl_percent: f64,
-    trades: i64,
+    pub pnl_percent: f64,
+    pub trades: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct MaximunDrawdown {
+pub struct MaximumDrawdown {
     amount: f64,
-    percent: f64,
+    pub percent: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -106,12 +119,25 @@ pub struct CumalativeReturn {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct BacktestResult {
-    backtest_request: BacktestRequest,
-    maximum_drawdown: MaximunDrawdown,
-    profit_trades: Trades,
-    loss_trades: Trades,
-    total: Trades,
-    cumalative_return: Vec<CumalativeReturn>,
+    pub maximum_drawdown: MaximumDrawdown,
+    pub profit_trades: Trades,
+    pub loss_trades: Trades,
+    pub total: Trades,
+    pub cumalative_return: Vec<CumalativeReturn>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(tag = "tag")]
+pub enum BacktestMetadata {
+    NormalBackTest(BacktestRequest),
+    PsoBackTest(Strategy),
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BacktestResultWithRequest {
+    pub metadata: BacktestMetadata,
+    #[serde(flatten)]
+    pub result: BacktestResult,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -120,23 +146,173 @@ pub struct BacktestReport {
     ticker: String,
     interval: Interval,
     fuzzy_preset: String,
-    backtest_result: BacktestResult,
+    backtest_result: BacktestResultWithRequest,
     run_at: i64,
 }
 
-// TODO need to have one randomly entering a postion for backtest
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BacktestReportWithId {
+    #[serde(deserialize_with = "deserialize_hex_string_from_object_id")]
+    _id: String,
+    #[serde(flatten)]
+    backtest_report: BacktestReport,
+}
 
-// what to save in db?
-// {
-//      report,
-//      cumlative_return for displaying the graph,
-// }
+pub trait IsBacktestReport {}
+
+impl IsBacktestReport for BacktestReport {}
+impl IsBacktestReport for BacktestReportWithId {}
+
+pub trait GetTime {
+    fn get_time(&self) -> i64;
+}
+
+impl GetTime for Ohlc {
+    fn get_time(&self) -> i64 {
+        self.time.timestamp_millis()
+    }
+}
+
+impl<T> GetTime for DTValue<T> {
+    fn get_time(&self) -> i64 {
+        self.time
+    }
+}
+
+// TODO classic one
 
 fn to_percent(x: f64, y: f64) -> f64 {
     (x / y) * 100.0
 }
 
-fn backtest(
+pub fn get_backtest_coll<T: IsBacktestReport>(db: &web::Data<Client>) -> Collection<T> {
+    let db_client = (*db).database(DB_NAME);
+    db_client.collection::<T>(COLLECTION_NAME)
+}
+
+pub fn get_valid_data<T: GetTime>(data: Vec<T>, start_time: i64, end_time: i64) -> Vec<T> {
+    data.into_iter()
+        .filter(|item| item.get_time() >= start_time && item.get_time() <= end_time)
+        .collect()
+}
+
+fn realize_positions(
+    positions: &mut [Position],
+    working_capital: &mut f64,
+    ohlc: &Ohlc,
+    last: bool,
+) {
+    for p in positions {
+        match p.realized {
+            Some(_) => continue,
+            None => {
+                let p_diff = ((ohlc.close - p.enter_price) / p.enter_price) * 100.0;
+                match p.pos_type {
+                    PosType::Long => {
+                        if p_diff >= p.take_profit_when || p_diff <= -p.stop_loss_when || last {
+                            let realized_amount = (p.amount / p.enter_price) * ohlc.close;
+                            let pnl = realized_amount - p.amount;
+                            *working_capital += p.amount + pnl;
+                            p.realized = Some(RealizedInfo {
+                                pnl,
+                                exit_price: ohlc.close,
+                                exit_time: ohlc.time.timestamp_millis(),
+                            });
+                        }
+                    }
+                    PosType::Short => {
+                        if -p_diff >= p.take_profit_when || -p_diff <= -p.stop_loss_when || last {
+                            let realized_amount = (p.amount / p.enter_price) * ohlc.close;
+                            let pnl = p.amount - realized_amount;
+                            *working_capital += p.amount + pnl;
+                            p.realized = Some(RealizedInfo {
+                                pnl,
+                                exit_price: ohlc.close,
+                                exit_time: ohlc.time.timestamp_millis(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn random_backtest(
+    valid_ohlc: &[Ohlc],
+    initial_capital: f64,
+    condition: SignalCondition,
+    start_time: i64,
+) -> (MaximumDrawdown, Trades) {
+    let mut rng = rand::thread_rng();
+    let coin = Uniform::from(0..=1);
+
+    let rounds = 5;
+    (0..=rounds)
+        .map(|_| {
+            let mut working_capital = initial_capital;
+            let mut positions: Vec<Position> = vec![];
+            for ohlc in valid_ohlc {
+                realize_positions(&mut positions, &mut working_capital, ohlc, false);
+
+                // toss a coin to determine whether to enter or not
+                if coin.sample(&mut rng) == 0 && working_capital <= 0.0 {
+                    continue;
+                }
+
+                let entry_amount = (((condition.money_management.entry_size_percent / 100.0)
+                    * working_capital)
+                    .max(condition.money_management.min_entry_size))
+                .min(working_capital);
+
+                working_capital -= entry_amount;
+                positions.push(Position::new(
+                    ohlc.close,
+                    ohlc.time.timestamp_millis(),
+                    entry_amount,
+                    condition.take_profit_when,
+                    condition.stop_loss_when,
+                    condition.signal_do_command.clone(),
+                ));
+            }
+            // realized the remaining positions
+            let last_ohlc = valid_ohlc
+                .last()
+                .expect("valid_ohlc should have at least 1 item");
+            realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
+
+            let result = generate_report(&positions, initial_capital, start_time);
+            (result.maximum_drawdown, result.total)
+        })
+        .fold(
+            (
+                MaximumDrawdown {
+                    amount: 0.0,
+                    percent: 0.0,
+                },
+                Trades {
+                    pnl_percent: 0.0,
+                    pnl: 0.0,
+                    trades: 0,
+                },
+            ),
+            |acc, (m, t)| {
+                (
+                    MaximumDrawdown {
+                        amount: acc.0.amount + m.amount / rounds as f64,
+                        percent: acc.0.percent + m.percent / rounds as f64,
+                    },
+                    Trades {
+                        pnl: acc.1.pnl + t.pnl / rounds as f64,
+                        pnl_percent: acc.1.pnl_percent + t.pnl_percent / rounds as f64,
+                        trades: acc.1.trades + t.trades / rounds,
+                    },
+                )
+            },
+        )
+}
+
+pub fn backtest(
     valid_ohlc: &[Ohlc],
     valid_fuzzy_output: &[DTValue<Vec<f64>>],
     signal_conditions: &[SignalCondition],
@@ -147,40 +323,7 @@ fn backtest(
 
     for (ohlc, signal) in valid_ohlc.iter().zip(valid_fuzzy_output.iter()) {
         // check if the previous position need to be closed or not
-        for p in &mut positions {
-            match p.realized {
-                Some(_) => continue,
-                None => {
-                    let p_diff = ((ohlc.close - p.enter_price) / p.enter_price) * 100.0;
-                    match p.pos_type {
-                        PosType::Long => {
-                            if p_diff >= p.take_profit_when || p_diff <= -p.stop_loss_when {
-                                let realized_amount = (p.amount / p.enter_price) * ohlc.close;
-                                let pnl = realized_amount - p.amount;
-                                working_capital += p.amount + pnl;
-                                p.realized = Some(RealizedInfo {
-                                    pnl,
-                                    exit_price: ohlc.close,
-                                    exit_time: ohlc.time.timestamp_millis(),
-                                });
-                            }
-                        }
-                        PosType::Short => {
-                            if -p_diff >= p.take_profit_when || -p_diff <= -p.stop_loss_when {
-                                let realized_amount = (p.amount / p.enter_price) * ohlc.close;
-                                let pnl = p.amount - realized_amount;
-                                working_capital += p.amount + pnl;
-                                p.realized = Some(RealizedInfo {
-                                    pnl,
-                                    exit_price: ohlc.close,
-                                    exit_time: ohlc.time.timestamp_millis(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        realize_positions(&mut positions, &mut working_capital, ohlc, false);
 
         if working_capital <= 0.0 {
             continue;
@@ -191,8 +334,9 @@ fn backtest(
             if signal.value[condition.signal_index as usize] > condition.signal_threshold {
                 // if we enter a position, determine the size of the position and enter it
                 // maybe we can many methods of position sizing
-                let entry_amount = (((condition.entry_size_percent / 100.0) * working_capital)
-                    .max(100f64))
+                let entry_amount = (((condition.money_management.entry_size_percent / 100.0)
+                    * working_capital)
+                    .max(condition.money_management.min_entry_size))
                 .min(working_capital);
 
                 working_capital -= entry_amount;
@@ -208,53 +352,20 @@ fn backtest(
         }
     }
 
-
     // realized the remaining positions
     let last_ohlc = valid_ohlc
         .last()
         .expect("valid_ohlc should have at least 1 item");
-    for p in &mut positions {
-        match p.realized {
-            Some(_) => continue,
-            None => match p.pos_type {
-                PosType::Long => {
-                    let realized_amount = (p.amount / p.enter_price) * last_ohlc.close;
-                    let pnl = realized_amount - p.amount;
-                    working_capital += p.amount + pnl;
-                    p.realized = Some(RealizedInfo {
-                        pnl,
-                        exit_price: last_ohlc.close,
-                        exit_time: last_ohlc.time.timestamp_millis(),
-                    });
-                }
-                PosType::Short => {
-                    let realized_amount = (p.amount / p.enter_price) * last_ohlc.close;
-                    let pnl = p.amount - realized_amount;
-                    working_capital += p.amount + pnl;
-                    p.realized = Some(RealizedInfo {
-                        pnl,
-                        exit_price: last_ohlc.close,
-                        exit_time: last_ohlc.time.timestamp_millis(),
-                    });
-                }
-            },
-        }
-    }
 
+    realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
     positions
 }
 
-fn generate_report(
+pub fn generate_report(
     positions: &[Position],
     initial_capital: f64,
     start_time: i64,
-) -> (
-    MaximunDrawdown,
-    Trades,
-    Trades,
-    Trades,
-    Vec<CumalativeReturn>,
-) {
+) -> BacktestResult {
     let mut cumalative_return = initial_capital;
     let mut g = BTreeMap::from([(start_time / 1000, cumalative_return)]);
     for p in positions {
@@ -272,8 +383,8 @@ fn generate_report(
         .map(|(time, value)| CumalativeReturn { time, value })
         .collect::<Vec<_>>();
 
-    let mut maximum_drawdown = f64::MIN;
-    let mut gt = 0.0;
+    let mut maximum_drawdown = 0.0;
+    let mut gt = 1.0;
     for r in 0..g.len() {
         for t in 0..r {
             let dd = g[t].value - g[r].value;
@@ -301,28 +412,61 @@ fn generate_report(
         profit_trades.1 + loss_trades.1,
     );
 
-    (
-        MaximunDrawdown {
+    BacktestResult {
+        maximum_drawdown: MaximumDrawdown {
             amount: maximum_drawdown,
             percent: to_percent(maximum_drawdown, gt),
         },
-        Trades {
+        profit_trades: Trades {
             pnl: profit_trades.0,
             pnl_percent: to_percent(profit_trades.0, initial_capital),
             trades: profit_trades.1,
         },
-        Trades {
+        loss_trades: Trades {
             pnl: loss_trades.0,
             pnl_percent: to_percent(loss_trades.0, initial_capital),
             trades: loss_trades.1,
         },
-        Trades {
+        total: Trades {
             pnl: total.0,
             pnl_percent: to_percent(total.0, initial_capital),
             trades: total.1,
         },
-        g,
-    )
+        cumalative_return: g,
+    }
+}
+
+pub async fn save_backtest_report(
+    db: &web::Data<Client>,
+    username: &String,
+    symbol: &String,
+    interval: &Interval,
+    preset: &String,
+    backtest_result: BacktestResultWithRequest,
+    run_at: i64,
+) -> Result<(BacktestReport, String), CustomError> {
+    let result = BacktestReport {
+        username: username.to_string(),
+        ticker: symbol.to_string(),
+        interval: interval.to_owned(),
+        fuzzy_preset: preset.to_string(),
+        backtest_result,
+        run_at,
+    };
+    let collection = get_backtest_coll(db);
+    let inserted_result = collection
+        .insert_one(result.clone(), None)
+        .await
+        .map_err(map_internal_err)?;
+
+    Ok((
+        result,
+        inserted_result
+            .inserted_id
+            .as_object_id()
+            .unwrap()
+            .to_string(),
+    ))
 }
 
 pub async fn create_backtest_report(
@@ -337,18 +481,8 @@ pub async fn create_backtest_report(
     let fuzzy_config = get_fuzzy_config(&db, &ohlc_data, preset, user).await?;
     let fuzzy_output = fuzzy_indicator(&fuzzy_config.0, fuzzy_config.1);
 
-    let valid_ohlc = ohlc_data
-        .0
-        .into_iter()
-        .filter(|ohlc| {
-            ohlc.time.timestamp_millis() >= request.start_time
-                && ohlc.time.timestamp_millis() <= request.end_time
-        })
-        .collect::<Vec<_>>();
-    let valid_fuzzy_output = fuzzy_output
-        .into_iter()
-        .filter(|output| output.time >= request.start_time && output.time <= request.end_time)
-        .collect::<Vec<_>>();
+    let valid_ohlc = get_valid_data(ohlc_data.0, request.start_time, request.end_time);
+    let valid_fuzzy_output = get_valid_data(fuzzy_output, request.start_time, request.end_time);
 
     let positions = backtest(
         &valid_ohlc,
@@ -357,47 +491,92 @@ pub async fn create_backtest_report(
         request.capital,
     );
 
-    let (maximum_drawdown, profit_trades, loss_trades, total, cumalative_return) =
-        generate_report(&positions, request.capital, request.start_time);
-
-    let backtest_result = BacktestResult {
-        backtest_request: request,
-        maximum_drawdown,
-        profit_trades,
-        loss_trades,
-        total,
-        cumalative_return,
+    let backtest_result = BacktestResultWithRequest {
+        result: generate_report(&positions, request.capital, request.start_time),
+        metadata: BacktestMetadata::NormalBackTest(request),
     };
-    let result = BacktestReport {
-        username: user.username.to_string(),
-        ticker: symbol.to_string(),
-        interval: interval.to_owned(),
-        fuzzy_preset: preset.to_string(),
+
+    let run_at = Utc::now().timestamp_millis();
+    Ok(save_backtest_report(
+        &db,
+        &user.username,
+        symbol,
+        interval,
+        preset,
         backtest_result,
-        run_at: Utc::now().timestamp_millis(),
-    };
-    let db_client = (*db).database(DB_NAME);
-    let collection = db_client.collection::<BacktestReport>(COLLECTION_NAME);
-    collection
-        .insert_one(result.clone(), None)
-        .await
-        .map_err(map_internal_err)?;
-
-    Ok(result)
+        run_at,
+    )
+    .await?
+    .0)
 }
 
 pub async fn get_backtest_reports(
     db: web::Data<Client>,
     username: String,
-) -> Result<Vec<BacktestReport>, CustomError> {
-    let db_client = (*db).database(DB_NAME);
-    let collection = db_client.collection::<BacktestReport>(COLLECTION_NAME);
-
-    Ok(collection
-        .find(doc! { "username": username }, None)
+) -> Result<Vec<BacktestReportWithId>, CustomError> {
+    let collection = get_backtest_coll(&db);
+    let find_options = FindOptions::builder().sort(doc! { "run_at": - 1}).build();
+    collection
+        .find(doc! { "username": username }, find_options)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()
         .await
-        .map_err(map_internal_err)?)
+        .map_err(map_internal_err)
+}
+
+pub async fn get_backtest_report(
+    db: &web::Data<Client>,
+    id: String,
+) -> Result<BacktestReportWithId, CustomError> {
+    let collection = get_backtest_coll::<BacktestReportWithId>(db);
+    let obj_id = oid::ObjectId::from_str(&id).map_err(map_internal_err)?;
+    collection
+        .find_one(doc! { "_id": obj_id }, None)
+        .await
+        .map_err(map_internal_err)?
+        .ok_or(CustomError::BacktestReportNotFound)
+}
+
+pub async fn delete_backtest_report(db: &web::Data<Client>, id: String) -> Result<(), CustomError> {
+    let collection = get_backtest_coll::<BacktestReportWithId>(db);
+    let obj_id = oid::ObjectId::from_str(&id).map_err(map_internal_err)?;
+
+    let result = collection
+        .delete_one(doc! { "_id": obj_id }, None)
+        .await
+        .map_err(map_internal_err)?;
+
+    if result.deleted_count == 0 {
+        return Err(CustomError::BacktestReportNotFound);
+    }
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RandomBacktestReport {
+    maximum_drawdown: MaximumDrawdown,
+    total: Trades,
+}
+
+pub async fn create_random_backtest_report(
+    db: web::Data<Client>,
+    request: BacktestRequest,
+    symbol: &String,
+    interval: &Interval,
+) -> RandomBacktestReport {
+    let ohlc_data = fetch_symbol(&db, symbol, &Some(interval.clone())).await;
+    let valid_ohlc = get_valid_data(ohlc_data.0, request.start_time, request.end_time);
+
+    let (maximum_drawdown, total) = random_backtest(
+        &valid_ohlc,
+        request.capital,
+        request.signal_conditions[0].clone(),
+        request.start_time,
+    );
+
+    RandomBacktestReport {
+        maximum_drawdown,
+        total,
+    }
 }

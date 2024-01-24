@@ -28,9 +28,9 @@ pub fn arange(start: f64, stop: f64, interval: f64) -> Vec<f64> {
 type Rule = (Vec<Option<String>>, Vec<Option<String>>);
 
 pub struct FuzzyEngine {
-    inputs_var: Vec<LinguisticVar>,
-    outputs_var: Vec<LinguisticVar>,
-    rules: Vec<Rule>,
+    pub inputs_var: Vec<LinguisticVar>,
+    pub outputs_var: Vec<LinguisticVar>,
+    pub rules: Vec<Rule>,
 }
 
 impl FuzzyEngine {
