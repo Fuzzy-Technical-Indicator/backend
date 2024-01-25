@@ -318,18 +318,18 @@ pub async fn linguistic_vars_optimization(
         .unwrap();
 
     let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.validation_end_time);
-    let validation_result = use_particle(
+    let first_run_validation = use_particle(
         &mut setting,
-        &mut best_group.lbest_pos,
+        &mut start_pos,
         &strat,
         &valid_ohlc,
         &fuzzy_rules,
         fuzzy_inputs.clone(),
         true,
     );
-    let first_run_validation = use_particle(
+    let validation_result = use_particle(
         &mut setting,
-        &mut start_pos,
+        &mut best_group.lbest_pos,
         &strat,
         &valid_ohlc,
         &fuzzy_rules,
