@@ -1,8 +1,15 @@
-use std::str::FromStr;
+use std::{str::FromStr};
 
 use actix_web::web;
+use apalis::{
+    self,
+    layers::{Extension},
+    prelude::*,
+    redis::RedisStorage,
+};
 use chrono::Utc;
 use futures::TryStreamExt;
+use log::info;
 use mongodb::{
     bson::{doc, oid, serde_helpers::deserialize_hex_string_from_object_id},
     options::{FindOptions, IndexOptions},
@@ -31,7 +38,7 @@ use super::{
 
 pub mod swarm;
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Strategy {
     epoch: usize,
     capital: f64,
@@ -379,13 +386,13 @@ pub async fn get_train_results(
 ) -> Result<Vec<TrainResultWithId>, CustomError> {
     let coll = get_train_result_coll(db).await?;
     let find_options = FindOptions::builder().sort(doc! { "run_at": - 1}).build();
-    Ok(coll
+    coll
         .find(doc! { "username": username}, find_options)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()
         .await
-        .map_err(map_internal_err)?)
+        .map_err(map_internal_err)
 }
 
 pub async fn delete_train_result(db: &web::Data<Client>, id: String) -> Result<(), CustomError> {
@@ -401,4 +408,55 @@ pub async fn delete_train_result(db: &web::Data<Client>, id: String) -> Result<(
         return Err(CustomError::TrainResultNotFound);
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TrainJob {
+    pub symbol: String,
+    pub interval: Interval,
+    pub preset: String,
+    pub user: User,
+    pub strat: Strategy,
+}
+
+impl Job for TrainJob {
+    const NAME: &'static str = "apalis::TrainJob";
+}
+
+async fn train_service(job: TrainJob, ctx: JobContext) -> Result<(), CustomError> {
+    let db = ctx.data_opt().unwrap();
+
+    let TrainJob {
+        symbol,
+        interval,
+        preset,
+        user,
+        strat,
+    } = job;
+
+    info!("Training job {:?} started", ctx.id().inner());
+    linguistic_vars_optimization(db, &symbol, &interval, &preset, &user, strat).await?;
+    info!("Training job {:?} done", ctx.id().inner());
+    Ok(())
+}
+
+pub async fn start_train_queue(
+    client: mongodb::Client,
+) -> Result<RedisStorage<TrainJob>, CustomError> {
+    let redis_url = dotenvy::var("REDIS_URL").unwrap();
+    let storage = RedisStorage::connect(redis_url)
+        .await
+        .map_err(map_internal_err)?;
+
+    let db = web::Data::new(client);
+
+    let monitor = Monitor::new().register(
+        WorkerBuilder::new("PSO tuner")
+            .layer(Extension(db.clone()))
+            .with_storage(storage.clone())
+            .build_fn(train_service),
+    );
+
+    let _ = tokio::spawn(monitor.run());
+    Ok(storage)
 }

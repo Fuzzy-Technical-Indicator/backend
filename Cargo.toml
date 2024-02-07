@@ -26,3 +26,5 @@ actix-web-httpauth = "0.8"
 rayon = "1.7.0"
 thiserror = "1.0"
 rand = "0.8.5"
+apalis = { version = "0.4", features = ["redis", "extensions"] }
+log = "0.4"

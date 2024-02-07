@@ -1,14 +1,14 @@
 use actix_web::web;
 
 use fuzzy_logic::FuzzyEngine;
-use mongodb::{Client};
+use mongodb::Client;
 
 use std::collections::BTreeMap;
 use tech_indicators::{DTValue, Ohlc};
 
 use super::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached,
-    error::{CustomError},
+    error::CustomError,
     macd_cached, obv_cached, rsi_cached,
     settings::{
         fetch_fuzzy_rules, fetch_setting, FuzzyRuleModel, LinguisticVarKind,
