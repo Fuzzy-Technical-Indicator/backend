@@ -32,7 +32,7 @@ pub enum PosType {
     Short,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct RealizedInfo {
     pnl: f64,
     exit_price: f64,
@@ -73,21 +73,26 @@ impl Position {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone)]
-pub struct CapitalManagement {
-    entry_size_percent: f64,
-    min_entry_size: f64,
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+pub enum CapitalManagement {
+    Normal {
+        entry_size_percent: f64,
+        min_entry_size: f64,
+    },
+    LiquidF {
+        min_entry_size: f64,
+    },
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SignalCondition {
     signal_index: u64,
     signal_threshold: f64,
     signal_do_command: PosType,
-    #[serde(flatten)]
-    money_management: CapitalManagement,
     take_profit_when: f64,
     stop_loss_when: f64,
+    capital_management: CapitalManagement,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -238,6 +243,49 @@ fn realize_positions(
     }
 }
 
+fn liquid_f_entry_size(
+    positions: &[Position],
+    min_entry_size: f64,
+    working_capital: f64,
+    output: f64,
+    output_max: f64,
+    threshold: f64,
+) -> f64 {
+    let v = positions
+        .iter()
+        .filter_map(|pos| pos.realized)
+        .map(|pos| pos.pnl)
+        .collect::<Vec<_>>();
+
+    if v.is_empty() {
+        return min_entry_size;
+    }
+    let risk_factor = v.iter().min_by(|a, b| a.total_cmp(b)).unwrap();
+
+    let mut max_twr = f64::MIN;
+    let mut max_f = 0.0;
+
+    for i in 1..99 {
+        let f = (i as f64) / 100.0;
+        let twr = v
+            .iter()
+            .map(|pnl| 1.0 + (f * pnl) / risk_factor)
+            .reduce(|acc, item| acc * item)
+            .unwrap();
+
+        if twr > max_twr {
+            max_twr = twr;
+            max_f = f;
+        }
+    }
+
+    let liquid_f = 0.1 * max_f;
+    let size = liquid_f + ((output - threshold) * (max_f - liquid_f)) / (output_max - threshold);
+    (size * working_capital)
+        .max(min_entry_size)
+        .min(working_capital)
+}
+
 fn random_backtest(
     valid_ohlc: &[Ohlc],
     initial_capital: f64,
@@ -260,10 +308,14 @@ fn random_backtest(
                     continue;
                 }
 
-                let entry_amount = (((condition.money_management.entry_size_percent / 100.0)
-                    * working_capital)
-                    .max(condition.money_management.min_entry_size))
-                .min(working_capital);
+                let entry_amount = match condition.capital_management {
+                    CapitalManagement::Normal {
+                        entry_size_percent,
+                        min_entry_size,
+                    } => (((entry_size_percent / 100.0) * working_capital).max(min_entry_size))
+                        .min(working_capital),
+                    CapitalManagement::LiquidF { min_entry_size } => min_entry_size,
+                };
 
                 working_capital -= entry_amount;
                 positions.push(Position::new(
@@ -318,6 +370,7 @@ pub fn backtest(
     signal_conditions: &[SignalCondition],
     initial_capital: f64,
 ) -> Vec<Position> {
+    use CapitalManagement::*;
     let mut working_capital = initial_capital;
     let mut positions: Vec<Position> = vec![];
 
@@ -331,13 +384,26 @@ pub fn backtest(
 
         // determine whether we will enter a position or not
         for condition in signal_conditions {
-            if signal.value[condition.signal_index as usize] > condition.signal_threshold {
+            let signal_v = signal.value[condition.signal_index as usize];
+            if signal_v > condition.signal_threshold {
                 // if we enter a position, determine the size of the position and enter it
                 // maybe we can many methods of position sizing
-                let entry_amount = (((condition.money_management.entry_size_percent / 100.0)
-                    * working_capital)
-                    .max(condition.money_management.min_entry_size))
-                .min(working_capital);
+
+                let entry_amount = match condition.capital_management {
+                    Normal {
+                        entry_size_percent,
+                        min_entry_size,
+                    } => (((entry_size_percent / 100.0) * working_capital).max(min_entry_size))
+                        .min(working_capital),
+                    LiquidF { min_entry_size } => liquid_f_entry_size(
+                        &positions,
+                        min_entry_size,
+                        working_capital,
+                        signal_v,
+                        100.0,
+                        condition.signal_threshold,
+                    ),
+                };
 
                 working_capital -= entry_amount;
                 positions.push(Position::new(

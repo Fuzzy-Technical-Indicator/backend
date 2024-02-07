@@ -1,9 +1,9 @@
+pub mod backtest;
 pub mod error;
 pub mod fuzzy;
+pub mod optimization;
 pub mod settings;
 pub mod users;
-pub mod backtest;
-pub mod optimization;
 
 use actix_web::web;
 use cached::proc_macro::cached;
@@ -124,7 +124,7 @@ async fn aggr_fetch(collection: &Collection<Ohlc>, interval: &Option<Interval>) 
     convert = r#"{ format!("{}{:?}{:?}", symbol, interval, cachable_dt()) }"#
 )]
 pub async fn fetch_symbol(
-    db: &web::Data<Client>,
+    db: &Client,
     symbol: &str,
     interval: &Option<Interval>,
 ) -> (Vec<Ohlc>, String) {

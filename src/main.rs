@@ -20,6 +20,8 @@ use actix_web::{
 use actix_web::{HttpMessage, HttpRequest, HttpResponse};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
+use apalis::prelude::Storage;
+
 use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
@@ -384,24 +386,39 @@ async fn run_pso(
     preset_query: web::Query<PresetQueryParam>,
     strat: web::Json<optimization::Strategy>,
     req: HttpRequest,
+    //r: web::Data<RedisStorage<optimization::TrainJob>>,
 ) -> ActixResult<HttpResponse> {
     let user = is_user_exist(req)?;
-    let symbol = &params.symbol;
-    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
-    let preset = &preset_query.preset;
+    let symbol = params.symbol.clone();
+    let interval = params.interval.clone().unwrap_or(Interval::OneDay);
+    let preset = preset_query.preset.clone();
 
-    let result = optimization::linguistic_vars_optimization(
+    /*
+    (**r)
+        .clone()
+        .push(optimization::TrainJob {
+            symbol,
+            interval,
+            preset,
+            user,
+            strat: strat.into_inner(),
+        })
+        .await
+        .unwrap();
+    */
+
+    let _result = optimization::linguistic_vars_optimization(
         &db,
-        symbol,
-        interval,
-        preset,
+        &symbol,
+        &interval,
+        &preset,
         &user,
         strat.into_inner(),
     )
     .await
     .map_err(map_custom_err)?;
 
-    Ok(HttpResponse::Ok().json(result))
+    Ok(HttpResponse::Ok().into())
 }
 
 #[get("")]
@@ -496,7 +513,7 @@ async fn auth_validator(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let uri = dotenvy::var("MONGO_DB_URI").unwrap();
+    let uri = dotenvy::var("MONGO_DB_URI").expect("Failed to get mongo uri");
     let ip = dotenvy::var("IP").unwrap_or("127.0.0.1".to_string());
     let port: u16 = match dotenvy::var("PORT") {
         Ok(p) => p.parse().unwrap_or(8000),
@@ -509,6 +526,12 @@ async fn main() -> std::io::Result<()> {
 
     env_logger::init_from_env(Env::default().default_filter_or("info"));
 
+    /*
+    let train_q = optimization::start_train_queue(client.clone())
+        .await
+        .unwrap();
+    */
+
     HttpServer::new(move || {
         let cors = Cors::permissive();
 
@@ -516,6 +539,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::new("%r %s %bbytes %Dms"))
             .wrap(cors)
             .app_data(web::Data::new(client.clone()))
+            //.app_data(web::Data::new(train_q.clone()))
             .service(
                 web::scope("/api/indicators")
                     .wrap(HttpAuthentication::bearer(auth_validator))
