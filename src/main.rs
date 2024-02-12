@@ -12,6 +12,7 @@ use core::settings::{LinguisticVarsModel, NewFuzzyRule};
 
 use actix_cors::Cors;
 use actix_web::dev::ServiceRequest;
+use actix_web::error::ErrorInternalServerError;
 use actix_web::http::KeepAlive;
 use actix_web::{
     delete, get, middleware::Logger, post, put, web, App, HttpServer, Responder,
@@ -23,8 +24,9 @@ use actix_web_httpauth::middleware::HttpAuthentication;
 
 use env_logger::Env;
 use mongodb::Client;
+use redis::Commands;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+
 
 #[derive(Deserialize)]
 struct QueryParams {
@@ -334,88 +336,72 @@ async fn get_user_setting(req: HttpRequest) -> ActixResult<HttpResponse> {
 
 #[post("/run")]
 async fn create_backtest_report(
-    db: web::Data<Client>,
     params: web::Query<QueryParams>,
     preset_query: web::Query<PresetQueryParam>,
     backtest_request: web::Json<backtest::BacktestRequest>,
     req: HttpRequest,
-) -> ActixResult<HttpResponse> {
-    let user = is_user_exist(req)?;
-    let symbol = &params.symbol;
-    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
-    let preset = &preset_query.preset;
-
-    let result = backtest::create_backtest_report(
-        db,
-        backtest_request.into_inner(),
-        &user,
-        symbol,
-        interval,
-        preset,
-    )
-    .await
-    .map_err(map_custom_err)?;
-
-    Ok(HttpResponse::Ok().json(result))
-}
-
-#[post("/runrandom")]
-async fn create_random_backtest_report(
-    db: web::Data<Client>,
-    params: web::Query<QueryParams>,
-    backtest_request: web::Json<backtest::BacktestRequest>,
-) -> ActixResult<HttpResponse> {
-    let symbol = &params.symbol;
-    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
-
-    let result = backtest::create_random_backtest_report(
-        db,
-        backtest_request.into_inner(),
-        symbol,
-        interval,
-    )
-    .await;
-
-    Ok(HttpResponse::Ok().json(result))
-}
-
-#[post("/run")]
-async fn run_pso(
-    db: web::Data<Client>,
-    params: web::Query<QueryParams>,
-    preset_query: web::Query<PresetQueryParam>,
-    strat: web::Json<optimization::Strategy>,
-    req: HttpRequest,
-    _sender: web::Data<mpsc::Sender<optimization::PSOTrainJob>>,
+    redis_client: web::Data<redis::Client>,
 ) -> ActixResult<HttpResponse> {
     let user = is_user_exist(req)?;
     let symbol = params.symbol.clone();
     let interval = params.interval.clone().unwrap_or(Interval::OneDay);
     let preset = preset_query.preset.clone();
-    
-    /*
-    (**sender)
-        .send(optimization::PSOTrainJob {
-            symbol,
-            interval,
-            preset,
-            user,
-            strat: strat.into_inner(),
-        })
-        .await
-        .unwrap();
-    */
 
-    let _result = optimization::linguistic_vars_optimization(
-        &db,
-        &symbol,
-        &interval,
-        &preset,
-        &user,
-        strat.into_inner(),
-    )
-    .await
-    .map_err(map_custom_err)?;
+    let job = backtest::BacktestJob {
+        request: backtest_request.into_inner(),
+        user,
+        symbol,
+        interval,
+        preset,
+    };
+
+    let json_job =
+        serde_json::to_string(&job).map_err(|e| ErrorInternalServerError(e.to_string()))?;
+
+    let mut con = redis_client
+        .into_inner()
+        .get_connection()
+        .map_err(|e| ErrorInternalServerError(e.to_string()))?;
+
+    con
+        .lpush("backtests", json_job)
+        .map_err(|e| ErrorInternalServerError(e.to_string()))?;
+
+    Ok(HttpResponse::Ok().into())
+}
+
+#[post("/run")]
+async fn run_pso(
+    params: web::Query<QueryParams>,
+    preset_query: web::Query<PresetQueryParam>,
+    strat: web::Json<optimization::Strategy>,
+    req: HttpRequest,
+    redis_client: web::Data<redis::Client>,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    let symbol = params.symbol.clone();
+    let interval = params.interval.clone().unwrap_or(Interval::OneDay);
+    let preset = preset_query.preset.clone();
+
+    let job = optimization::PSOTrainJob {
+        symbol,
+        interval,
+        preset,
+        user,
+        strat: strat.into_inner(),
+    };
+
+    let json_job =
+        serde_json::to_string(&job).map_err(|e| ErrorInternalServerError(e.to_string()))?;
+
+    let mut con = redis_client
+        .into_inner()
+        .get_connection()
+        .map_err(|e| ErrorInternalServerError(e.to_string()))?;
+
+    con
+        .lpush("pso", json_job)
+        .map_err(|e| ErrorInternalServerError(e.to_string()))?;
 
     Ok(HttpResponse::Ok().into())
 }
@@ -512,20 +498,21 @@ async fn auth_validator(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let uri = dotenvy::var("MONGO_DB_URI").expect("Failed to get mongo uri");
     let ip = dotenvy::var("IP").unwrap_or("127.0.0.1".to_string());
     let port: u16 = match dotenvy::var("PORT") {
         Ok(p) => p.parse().unwrap_or(8000),
         _ => 8000,
     };
 
+    let uri = dotenvy::var("MONGO_DB_URI").expect("Failed to get mongo uri");
     let client = Client::with_uri_str(uri)
         .await
         .expect("Failed to connect to Mongodb");
 
-    env_logger::init_from_env(Env::default().default_filter_or("info"));
+    let redis_url = dotenvy::var("REDIS_URL").expect("Failed to get redis url");
+    let redis_client = redis::Client::open(redis_url).expect("Failed to open redis");
 
-    let train_q = optimization::start_train_q(client.clone()).await;
+    env_logger::init_from_env(Env::default().default_filter_or("info"));
 
     HttpServer::new(move || {
         let cors = Cors::permissive();
@@ -534,7 +521,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::new("%r %s %bbytes %Dms"))
             .wrap(cors)
             .app_data(web::Data::new(client.clone()))
-            .app_data(web::Data::new(train_q.clone()))
+            .app_data(web::Data::new(redis_client.clone()))
             .service(
                 web::scope("/api/indicators")
                     .wrap(HttpAuthentication::bearer(auth_validator))
@@ -573,7 +560,6 @@ async fn main() -> std::io::Result<()> {
                     .service(get_backtest_reports)
                     .service(get_backtest_report)
                     .service(delete_backtest_report)
-                    .service(create_random_backtest_report),
             )
             .service(
                 web::scope("/api/pso")

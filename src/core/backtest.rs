@@ -184,6 +184,15 @@ impl<T> GetTime for DTValue<T> {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BacktestJob {
+    pub request: BacktestRequest,
+    pub user: User,
+    pub symbol: String,
+    pub interval: Interval,
+    pub preset: String,
+}
+
 // TODO classic one
 
 fn to_percent(x: f64, y: f64) -> f64 {
