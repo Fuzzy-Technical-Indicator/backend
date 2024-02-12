@@ -20,11 +20,11 @@ use actix_web::{
 use actix_web::{HttpMessage, HttpRequest, HttpResponse};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
-use apalis::prelude::Storage;
 
 use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 #[derive(Deserialize)]
 struct QueryParams {
@@ -386,17 +386,16 @@ async fn run_pso(
     preset_query: web::Query<PresetQueryParam>,
     strat: web::Json<optimization::Strategy>,
     req: HttpRequest,
-    //r: web::Data<RedisStorage<optimization::TrainJob>>,
+    _sender: web::Data<mpsc::Sender<optimization::PSOTrainJob>>,
 ) -> ActixResult<HttpResponse> {
     let user = is_user_exist(req)?;
     let symbol = params.symbol.clone();
     let interval = params.interval.clone().unwrap_or(Interval::OneDay);
     let preset = preset_query.preset.clone();
-
+    
     /*
-    (**r)
-        .clone()
-        .push(optimization::TrainJob {
+    (**sender)
+        .send(optimization::PSOTrainJob {
             symbol,
             interval,
             preset,
@@ -526,11 +525,7 @@ async fn main() -> std::io::Result<()> {
 
     env_logger::init_from_env(Env::default().default_filter_or("info"));
 
-    /*
-    let train_q = optimization::start_train_queue(client.clone())
-        .await
-        .unwrap();
-    */
+    let train_q = optimization::start_train_q(client.clone()).await;
 
     HttpServer::new(move || {
         let cors = Cors::permissive();
@@ -539,7 +534,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::new("%r %s %bbytes %Dms"))
             .wrap(cors)
             .app_data(web::Data::new(client.clone()))
-            //.app_data(web::Data::new(train_q.clone()))
+            .app_data(web::Data::new(train_q.clone()))
             .service(
                 web::scope("/api/indicators")
                     .wrap(HttpAuthentication::bearer(auth_validator))

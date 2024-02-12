@@ -141,7 +141,7 @@ pub struct NewFuzzyRule {
     output: FuzzyRuleData,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct FuzzyRuleModel {
     #[serde(deserialize_with = "deserialize_hex_string_from_object_id")]
     _id: String,

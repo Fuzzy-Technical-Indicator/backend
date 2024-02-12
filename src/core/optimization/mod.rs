@@ -1,15 +1,12 @@
-use std::{str::FromStr};
+use std::{
+    collections::VecDeque,
+    str::FromStr,
+};
 
 use actix_web::web;
-use apalis::{
-    self,
-    layers::{Extension},
-    prelude::*,
-    redis::RedisStorage,
-};
 use chrono::Utc;
 use futures::TryStreamExt;
-use log::info;
+
 use mongodb::{
     bson::{doc, oid, serde_helpers::deserialize_hex_string_from_object_id},
     options::{FindOptions, IndexOptions},
@@ -17,6 +14,9 @@ use mongodb::{
 };
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, Ohlc};
+use tokio::{
+    sync::{mpsc, oneshot},
+};
 
 use self::swarm::{gen_rho, Individual, IndividualGroup};
 
@@ -234,13 +234,6 @@ fn objective_func(result: &BacktestResult, reference: &BacktestResult) -> f64 {
     let mdd_change = result.maximum_drawdown.percent - reference.maximum_drawdown.percent;
 
     -1.0 * (profit_change + mdd_change)
-    /*
-    let profit_trades_p = 100.0 * (result.profit_trades.trades as f64 / p_trades);
-    let loss_trades_p = 10.0 * (result.loss_trades.trades as f64 / l_trades);
-    -1.0 * (profit_trades_p + result.total.pnl_percent
-        - result.maximum_drawdown.percent
-        - loss_trades_p)
-    */
 }
 
 /// Using PSO to optimize linguistic variables
@@ -259,92 +252,112 @@ pub async fn linguistic_vars_optimization(
     if strat.signal_conditions.is_empty() {
         return Err(CustomError::ExpectAtlestOneSignalCondition);
     }
-
     // data preparation
     let username = &user.username;
     let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
-    let mut setting = fetch_setting(db, username, preset).await?;
+    let setting = fetch_setting(db, username, preset).await?;
     let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
 
-    // set initial values for each individual
-    let fuzzy_inputs = create_input(&setting, &data, user);
+    let (send, recv) = oneshot::channel();
 
-    let mut start_pos = to_particle(&setting.vars);
-    let mut groups = create_particle_groups(&start_pos, 1, 5);
+    let setting_cloned = setting.clone();
+    let fuzzy_rules_cloned = fuzzy_rules.clone();
+    let user_cloned = user.clone();
+    let strat_cloned = strat.clone();
 
-    // train on training period only
-    let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.train_end_time);
-    let first_run_train = use_particle(
-        &mut setting,
-        &mut start_pos,
-        &strat,
-        &valid_ohlc,
-        &fuzzy_rules,
-        fuzzy_inputs.clone(),
-        false,
-    );
+    rayon::spawn(move || {
+        let mut setting = setting_cloned;
+        let fuzzy_rules = fuzzy_rules_cloned;
+        let user = user_cloned;
+        let strat = strat_cloned;
 
-    let mut train_progress: Vec<TrainProgress> = vec![];
-    for i in 0..strat.epoch {
-        for (k, g) in groups.iter_mut().enumerate() {
-            for x in g.particles.iter_mut() {
-                let r = use_particle(
-                    &mut setting,
-                    &mut x.position,
-                    &strat,
-                    &valid_ohlc,
-                    &fuzzy_rules,
-                    fuzzy_inputs.clone(),
-                    false,
-                );
+        // set initial values for each individual
+        let fuzzy_inputs = create_input(&setting, &data, &user);
 
-                let f = objective_func(&r, &first_run_train);
-                if f < x.f {
-                    x.f = f;
-                    x.best_pos = x.position.clone();
+        let mut start_pos = to_particle(&setting.vars);
+        let mut groups = create_particle_groups(&start_pos, 1, 5);
+
+        // train on training period only
+        let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.train_end_time);
+        let first_run_train = use_particle(
+            &mut setting,
+            &mut start_pos,
+            &strat,
+            &valid_ohlc,
+            &fuzzy_rules,
+            fuzzy_inputs.clone(),
+            false,
+        );
+
+        let mut train_progress: Vec<TrainProgress> = vec![];
+        for i in 0..strat.epoch {
+            for (k, g) in groups.iter_mut().enumerate() {
+                for x in g.particles.iter_mut() {
+                    let r = use_particle(
+                        &mut setting,
+                        &mut x.position,
+                        &strat,
+                        &valid_ohlc,
+                        &fuzzy_rules,
+                        fuzzy_inputs.clone(),
+                        false,
+                    );
+
+                    let f = objective_func(&r, &first_run_train);
+                    if f < x.f {
+                        x.f = f;
+                        x.best_pos = x.position.clone();
+                    }
+                    if f < g.lbest_f {
+                        g.lbest_f = f;
+                        g.lbest_pos = x.position.clone();
+                    }
+                    x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
+                    x.change_pos();
+
+                    train_progress.push(TrainProgress {
+                        epoch: i,
+                        group: k,
+                        f,
+                    });
                 }
-                if f < g.lbest_f {
-                    g.lbest_f = f;
-                    g.lbest_pos = x.position.clone();
-                }
-                x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
-                x.change_pos();
-
-                train_progress.push(TrainProgress {
-                    epoch: i,
-                    group: k,
-                    f,
-                });
             }
         }
-    }
 
-    let mut best_group = groups
-        .into_iter()
-        .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
-        .unwrap();
+        let mut best_group = groups
+            .into_iter()
+            .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
+            .unwrap();
 
-    let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.validation_end_time);
-    let first_run_validation = use_particle(
-        &mut setting,
-        &mut start_pos,
-        &strat,
-        &valid_ohlc,
-        &fuzzy_rules,
-        fuzzy_inputs.clone(),
-        true,
-    );
-    let validation_result = use_particle(
-        &mut setting,
-        &mut best_group.lbest_pos,
-        &strat,
-        &valid_ohlc,
-        &fuzzy_rules,
-        fuzzy_inputs,
-        true,
-    );
+        let valid_ohlc =
+            get_valid_data(data.0.clone(), strat.start_time, strat.validation_end_time);
+        let first_run_validation = use_particle(
+            &mut setting,
+            &mut start_pos,
+            &strat,
+            &valid_ohlc,
+            &fuzzy_rules,
+            fuzzy_inputs.clone(),
+            true,
+        );
+        let validation_result = use_particle(
+            &mut setting,
+            &mut best_group.lbest_pos,
+            &strat,
+            &valid_ohlc,
+            &fuzzy_rules,
+            fuzzy_inputs,
+            true,
+        );
 
-    let validation_f = objective_func(&validation_result, &first_run_validation);
+        let validation_f = objective_func(&validation_result, &first_run_validation);
+
+        let _ = send.send((setting, validation_f, validation_result, train_progress));
+    });
+
+    let (mut new_setting, validation_f, validation_result, train_progress) =
+        recv.await.expect("Panic in rayon::spawn");
+
     let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
     let run_at = Utc::now().timestamp_millis();
     let (_, backtest_id) = save_backtest_report(
@@ -362,8 +375,8 @@ pub async fn linguistic_vars_optimization(
     .await?;
 
     save_fuzzy_rules(db, fuzzy_rules, &new_preset_name).await?;
-    setting.preset = new_preset_name.clone();
-    save_linguistic_vars_setting(db, setting).await?;
+    new_setting.preset = new_preset_name.clone();
+    save_linguistic_vars_setting(db, new_setting).await?;
 
     let train_result = TrainResult {
         username: username.clone(),
@@ -386,8 +399,7 @@ pub async fn get_train_results(
 ) -> Result<Vec<TrainResultWithId>, CustomError> {
     let coll = get_train_result_coll(db).await?;
     let find_options = FindOptions::builder().sort(doc! { "run_at": - 1}).build();
-    coll
-        .find(doc! { "username": username}, find_options)
+    coll.find(doc! { "username": username}, find_options)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()
@@ -410,8 +422,8 @@ pub async fn delete_train_result(db: &web::Data<Client>, id: String) -> Result<(
     Ok(())
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TrainJob {
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PSOTrainJob {
     pub symbol: String,
     pub interval: Interval,
     pub preset: String,
@@ -419,44 +431,41 @@ pub struct TrainJob {
     pub strat: Strategy,
 }
 
-impl Job for TrainJob {
-    const NAME: &'static str = "apalis::TrainJob";
-}
+pub async fn start_train_q(client: mongodb::Client) -> mpsc::Sender<PSOTrainJob> {
+    let _db = web::Data::new(client);
+    let (tx, _rx) = mpsc::channel::<PSOTrainJob>(1);
 
-async fn train_service(job: TrainJob, ctx: JobContext) -> Result<(), CustomError> {
-    let db = ctx.data_opt().unwrap();
+    let _queue: VecDeque<PSOTrainJob> = VecDeque::new();
 
-    let TrainJob {
-        symbol,
-        interval,
-        preset,
-        user,
-        strat,
-    } = job;
+    // consumer task
+    /*
+    let _ = task::spawn(async move {
+        while let Some(job) = rx.recv().await {
+            let time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backward ??");
 
-    info!("Training job {:?} started", ctx.id().inner());
-    linguistic_vars_optimization(db, &symbol, &interval, &preset, &user, strat).await?;
-    info!("Training job {:?} done", ctx.id().inner());
-    Ok(())
-}
+            let PSOTrainJob {
+                symbol,
+                interval,
+                preset,
+                user,
+                strat,
+            } = job;
 
-pub async fn start_train_queue(
-    client: mongodb::Client,
-) -> Result<RedisStorage<TrainJob>, CustomError> {
-    let redis_url = dotenvy::var("REDIS_URL").unwrap();
-    let storage = RedisStorage::connect(redis_url)
-        .await
-        .map_err(map_internal_err)?;
+            let r =
+                linguistic_vars_optimization(&db, &symbol, &interval, &preset, &user, strat).await;
+            info!("Finished training job {:?}", time);
 
-    let db = web::Data::new(client);
+            match r {
+                Ok(_) => {}
+                Err(e) => {
+                    log::error!("Error in training job: {:?}", e);
+                }
+            }
+        }
+    });
+    */
 
-    let monitor = Monitor::new().register(
-        WorkerBuilder::new("PSO tuner")
-            .layer(Extension(db.clone()))
-            .with_storage(storage.clone())
-            .build_fn(train_service),
-    );
-
-    let _ = tokio::spawn(monitor.run());
-    Ok(storage)
+    tx
 }
