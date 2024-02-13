@@ -1,4 +1,7 @@
-use std::str::FromStr;
+use std::{
+    str::FromStr,
+    sync::{mpsc::Receiver, Mutex},
+};
 
 use actix_web::web;
 use chrono::Utc;
@@ -11,7 +14,6 @@ use mongodb::{
 };
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, Ohlc};
-use tokio::sync::oneshot;
 
 use self::swarm::{gen_rho, Individual, IndividualGroup};
 
@@ -182,14 +184,14 @@ async fn save_linguistic_vars_setting(
 async fn save_fuzzy_rules(
     db: &web::Data<Client>,
     data: Vec<FuzzyRuleModel>,
-    new_preset_name: &String,
+    new_preset_name: &str,
 ) -> Result<(), CustomError> {
     let dt = data.into_iter().map(|item| FuzzyRuleModelWithOutId {
         input: item.input,
         output: item.output,
         username: item.username,
         valid: item.valid,
-        preset: new_preset_name.clone(),
+        preset: new_preset_name.to_owned(),
     });
 
     let coll = get_rules_coll(db).await?;
@@ -254,7 +256,7 @@ pub async fn linguistic_vars_optimization(
     let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
 
     // set initial values for each individual
-    let fuzzy_inputs = create_input(&setting, &data, &user);
+    let fuzzy_inputs = create_input(&setting, &data, user);
 
     let mut start_pos = to_particle(&setting.vars);
     let mut groups = create_particle_groups(&start_pos, 1, 5);
@@ -404,4 +406,43 @@ pub struct PSOTrainJob {
     pub preset: String,
     pub user: User,
     pub strat: Strategy,
+}
+
+#[tokio::main]
+pub async fn pso_consumer(
+    mongo_uri: String,
+    receiver: Receiver<PSOTrainJob>,
+    pso_counter: web::Data<Mutex<u32>>,
+) {
+    let client = Client::with_uri_str(mongo_uri)
+        .await
+        .expect("Failed to connect to Mongodb");
+    let db = web::Data::new(client);
+
+    while let Ok(job) = receiver.recv() {
+        log::info!("PSO job started");
+        let PSOTrainJob {
+            symbol,
+            interval,
+            preset,
+            user,
+            strat,
+        } = job;
+
+        let r = linguistic_vars_optimization(&db, &symbol, &interval, &preset, &user, strat).await;
+        match r {
+            Ok(_) => {
+                log::info!("PSO job success")
+            }
+            Err(e) => {
+                log::error!("Error in PSO job: {:?}", e);
+            }
+        }
+
+        {
+            let mut c = *pso_counter.lock().unwrap();
+            c = c.saturating_sub(1);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
 }

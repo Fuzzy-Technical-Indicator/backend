@@ -33,7 +33,7 @@ impl Individual {
     }
 
     /// Speed updator with social component included
-    pub fn update_speed(&mut self, other_best: &Vec<f64>, rho1: f64, rho2: f64) {
+    pub fn update_speed(&mut self, other_best: &[f64], rho1: f64, rho2: f64) {
         let w = 1.0;
         self.speed
             .iter_mut()

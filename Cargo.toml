@@ -27,4 +27,3 @@ rayon = "1.7.0"
 thiserror = "1.0"
 rand = "0.8.5"
 log = "0.4"
-redis = { version = "0.24", features = ["tokio-comp"] }

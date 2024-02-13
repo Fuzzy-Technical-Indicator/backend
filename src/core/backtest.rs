@@ -1,7 +1,7 @@
-use std::{collections::BTreeMap, str::FromStr};
+use std::{collections::BTreeMap, str::FromStr, sync::mpsc::Receiver};
 
 use crate::core::Interval;
-use actix_web::web;
+use actix_web::web::{self};
 use chrono::Utc;
 use futures::TryStreamExt;
 use mongodb::{
@@ -637,7 +637,7 @@ pub struct RandomBacktestReport {
 pub async fn create_random_backtest_report(
     db: web::Data<Client>,
     request: BacktestRequest,
-    symbol: &String,
+    symbol: &str,
     interval: &Interval,
 ) -> RandomBacktestReport {
     let ohlc_data = fetch_symbol(&db, symbol, &Some(interval.clone())).await;
@@ -653,5 +653,35 @@ pub async fn create_random_backtest_report(
     RandomBacktestReport {
         maximum_drawdown,
         total,
+    }
+}
+
+#[tokio::main]
+pub async fn backtest_consumer(mongo_uri: String, receiver: Receiver<BacktestJob>) {
+    let client = Client::with_uri_str(mongo_uri)
+        .await
+        .expect("Failed to connect to Mongodb");
+    let db = web::Data::new(client);
+
+    while let Ok(job) = receiver.recv() {
+        log::info!("Backtest job started");
+        let BacktestJob {
+            request,
+            user,
+            symbol,
+            interval,
+            preset,
+        } = job;
+        let r =
+            create_backtest_report(db.clone(), request, &user, &symbol, &interval, &preset).await;
+        match r {
+            Ok(_) => {
+                log::info!("Backtest job success")
+            }
+            Err(e) => {
+                log::error!("Error in Backtest job: {:?}", e);
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 }
