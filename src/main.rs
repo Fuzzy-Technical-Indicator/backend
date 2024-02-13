@@ -1,6 +1,8 @@
 pub mod core;
 
+use core::backtest::backtest_consumer;
 use core::error::CustomError;
+use core::optimization::pso_consumer;
 use core::{
     accum_dist_cached, adx_cached, aroon_cached, backtest, bb_cached, error::map_custom_err,
     fetch_symbol, fetch_user_ohlc, fuzzy_cached, macd_cached, obv_cached, optimization, rsi_cached,
@@ -10,8 +12,13 @@ use core::{users, Interval};
 
 use core::settings::{LinguisticVarsModel, NewFuzzyRule};
 
+use std::sync::mpsc::Sender;
+use std::sync::{mpsc, Mutex};
+use std::{thread};
+
 use actix_cors::Cors;
 use actix_web::dev::ServiceRequest;
+use actix_web::error::ErrorInternalServerError;
 use actix_web::http::KeepAlive;
 use actix_web::{
     delete, get, middleware::Logger, post, put, web, App, HttpServer, Responder,
@@ -20,7 +27,6 @@ use actix_web::{
 use actix_web::{HttpMessage, HttpRequest, HttpResponse};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
-use apalis::prelude::Storage;
 
 use env_logger::Env;
 use mongodb::Client;
@@ -332,91 +338,78 @@ async fn get_user_setting(req: HttpRequest) -> ActixResult<HttpResponse> {
     Ok(HttpResponse::Ok().json(user))
 }
 
+#[get("/running")]
+async fn get_running_backtest(
+    backtest_counter: web::Data<Mutex<u32>>,
+) -> ActixResult<HttpResponse> {
+    let result = { *backtest_counter.lock().unwrap() };
+    Ok(HttpResponse::Ok().json(result))
+}
+
 #[post("/run")]
 async fn create_backtest_report(
-    db: web::Data<Client>,
     params: web::Query<QueryParams>,
     preset_query: web::Query<PresetQueryParam>,
     backtest_request: web::Json<backtest::BacktestRequest>,
     req: HttpRequest,
-) -> ActixResult<HttpResponse> {
-    let user = is_user_exist(req)?;
-    let symbol = &params.symbol;
-    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
-    let preset = &preset_query.preset;
-
-    let result = backtest::create_backtest_report(
-        db,
-        backtest_request.into_inner(),
-        &user,
-        symbol,
-        interval,
-        preset,
-    )
-    .await
-    .map_err(map_custom_err)?;
-
-    Ok(HttpResponse::Ok().json(result))
-}
-
-#[post("/runrandom")]
-async fn create_random_backtest_report(
-    db: web::Data<Client>,
-    params: web::Query<QueryParams>,
-    backtest_request: web::Json<backtest::BacktestRequest>,
-) -> ActixResult<HttpResponse> {
-    let symbol = &params.symbol;
-    let interval = params.interval.as_ref().unwrap_or(&Interval::OneDay);
-
-    let result = backtest::create_random_backtest_report(
-        db,
-        backtest_request.into_inner(),
-        symbol,
-        interval,
-    )
-    .await;
-
-    Ok(HttpResponse::Ok().json(result))
-}
-
-#[post("/run")]
-async fn run_pso(
-    db: web::Data<Client>,
-    params: web::Query<QueryParams>,
-    preset_query: web::Query<PresetQueryParam>,
-    strat: web::Json<optimization::Strategy>,
-    req: HttpRequest,
-    //r: web::Data<RedisStorage<optimization::TrainJob>>,
+    sender: web::Data<Sender<backtest::BacktestJob>>,
+    backtest_counter: web::Data<Mutex<u32>>,
 ) -> ActixResult<HttpResponse> {
     let user = is_user_exist(req)?;
     let symbol = params.symbol.clone();
     let interval = params.interval.clone().unwrap_or(Interval::OneDay);
     let preset = preset_query.preset.clone();
 
-    /*
-    (**r)
-        .clone()
-        .push(optimization::TrainJob {
-            symbol,
-            interval,
-            preset,
-            user,
-            strat: strat.into_inner(),
-        })
-        .await
-        .unwrap();
-    */
+    let job = backtest::BacktestJob {
+        request: backtest_request.into_inner(),
+        user,
+        symbol,
+        interval,
+        preset,
+    };
 
-    let _result = optimization::linguistic_vars_optimization(
-        &db,
-        &symbol,
-        &interval,
-        &preset,
-        &user,
-        strat.into_inner(),
-    )
-    .await
-    .map_err(map_custom_err)?;
+    sender
+        .send(job)
+        .map_err(|e| ErrorInternalServerError(e.to_string()))?;
+    {
+        *backtest_counter.lock().unwrap() += 1;
+    }
+
+    Ok(HttpResponse::Ok().into())
+}
+
+#[get("/running")]
+async fn running_pso(pso_counter: web::Data<Mutex<u32>>) -> ActixResult<HttpResponse> {
+    let result = { *pso_counter.lock().unwrap() };
+    Ok(HttpResponse::Ok().json(result))
+}
+
+#[post("/run")]
+async fn run_pso(
+    params: web::Query<QueryParams>,
+    preset_query: web::Query<PresetQueryParam>,
+    strat: web::Json<optimization::Strategy>,
+    req: HttpRequest,
+    pso_sender: web::Data<Sender<optimization::PSOTrainJob>>,
+    pso_counter: web::Data<Mutex<u32>>,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    let symbol = params.symbol.clone();
+    let interval = params.interval.clone().unwrap_or(Interval::OneDay);
+    let preset = preset_query.preset.clone();
+
+    let job = optimization::PSOTrainJob {
+        symbol,
+        interval,
+        preset,
+        user,
+        strat: strat.into_inner(),
+    };
+
+    pso_sender
+        .send(job)
+        .map_err(|e| ErrorInternalServerError(e.to_string()))?;
+    *pso_counter.lock().unwrap() += 1;
 
     Ok(HttpResponse::Ok().into())
 }
@@ -512,25 +505,22 @@ async fn auth_validator(
 }
 
 #[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    let uri = dotenvy::var("MONGO_DB_URI").expect("Failed to get mongo uri");
+async fn main_server(
+    mongodb_uri: String,
+    pso_sender: Sender<optimization::PSOTrainJob>,
+    pso_counter: web::Data<Mutex<u32>>,
+    backtest_sender: Sender<backtest::BacktestJob>,
+    backtest_counter: web::Data<Mutex<u32>>,
+) -> std::io::Result<()> {
     let ip = dotenvy::var("IP").unwrap_or("127.0.0.1".to_string());
     let port: u16 = match dotenvy::var("PORT") {
         Ok(p) => p.parse().unwrap_or(8000),
         _ => 8000,
     };
 
-    let client = Client::with_uri_str(uri)
+    let client = Client::with_uri_str(mongodb_uri)
         .await
         .expect("Failed to connect to Mongodb");
-
-    env_logger::init_from_env(Env::default().default_filter_or("info"));
-
-    /*
-    let train_q = optimization::start_train_queue(client.clone())
-        .await
-        .unwrap();
-    */
 
     HttpServer::new(move || {
         let cors = Cors::permissive();
@@ -539,7 +529,8 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::new("%r %s %bbytes %Dms"))
             .wrap(cors)
             .app_data(web::Data::new(client.clone()))
-            //.app_data(web::Data::new(train_q.clone()))
+            .app_data(web::Data::new(pso_sender.clone()))
+            .app_data(web::Data::new(backtest_sender.clone()))
             .service(
                 web::scope("/api/indicators")
                     .wrap(HttpAuthentication::bearer(auth_validator))
@@ -573,17 +564,20 @@ async fn main() -> std::io::Result<()> {
             )
             .service(
                 web::scope("/api/backtesting")
+                    .app_data(backtest_counter.clone())
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(create_backtest_report)
+                    .service(get_running_backtest)
                     .service(get_backtest_reports)
                     .service(get_backtest_report)
-                    .service(delete_backtest_report)
-                    .service(create_random_backtest_report),
+                    .service(delete_backtest_report),
             )
             .service(
                 web::scope("/api/pso")
+                    .app_data(pso_counter.clone())
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(run_pso)
+                    .service(running_pso)
                     .service(delete_pso_result)
                     .service(get_pso_result),
             )
@@ -593,4 +587,45 @@ async fn main() -> std::io::Result<()> {
     .bind((ip, port))?
     .run()
     .await
+}
+
+fn main() {
+    env_logger::init_from_env(Env::default().default_filter_or("info"));
+
+    let mongo_uri = dotenvy::var("MONGO_DB_URI").expect("Failed to get mongo uri");
+
+    let (pso_sender, pso_receiver) = mpsc::channel();
+    let (backtest_sender, backtest_receiver) = mpsc::channel();
+    let pso_counter = web::Data::new(Mutex::new(0u32));
+    let backtest_counter = web::Data::new(Mutex::new(0u32));
+
+    let t0 = thread::spawn({
+        let mongo_uri = mongo_uri.clone();
+        let pso_counter = pso_counter.clone();
+        move || {
+            main_server(
+                mongo_uri,
+                pso_sender,
+                pso_counter,
+                backtest_sender,
+                backtest_counter,
+            )
+            .unwrap();
+        }
+    });
+
+    let t1 = thread::spawn({
+        let mongo_uri = mongo_uri.clone();
+        || {
+            pso_consumer(mongo_uri, pso_receiver, pso_counter);
+        }
+    });
+
+    let t2 = thread::spawn(|| {
+        backtest_consumer(mongo_uri, backtest_receiver);
+    });
+
+    t0.join().expect("Main Service has panicked");
+    t1.join().expect("PSO Consumer has panicked");
+    t2.join().expect("Backtest Consumer has panicked");
 }

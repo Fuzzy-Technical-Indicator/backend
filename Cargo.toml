@@ -14,7 +14,7 @@ tech_indicators = { path = "tech_indicators" }
 tokio = { version = "1", features = ["full"] }
 mongodb = { version = "2.8.0", features = ["bson-chrono-0_4"] }
 dotenvy = "0.15.6"
-chrono = "0.4.23"
+chrono = "0.4"
 futures = "0.3"
 cached = { version = "0.46.1", features = ["async"] }
 env_logger = "0.10"
@@ -26,5 +26,4 @@ actix-web-httpauth = "0.8"
 rayon = "1.7.0"
 thiserror = "1.0"
 rand = "0.8.5"
-apalis = { version = "0.4", features = ["redis", "extensions"] }
 log = "0.4"

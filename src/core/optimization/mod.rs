@@ -1,15 +1,12 @@
-use std::{str::FromStr};
+use std::{
+    str::FromStr,
+    sync::{mpsc::Receiver, Mutex},
+};
 
 use actix_web::web;
-use apalis::{
-    self,
-    layers::{Extension},
-    prelude::*,
-    redis::RedisStorage,
-};
 use chrono::Utc;
 use futures::TryStreamExt;
-use log::info;
+
 use mongodb::{
     bson::{doc, oid, serde_helpers::deserialize_hex_string_from_object_id},
     options::{FindOptions, IndexOptions},
@@ -187,14 +184,14 @@ async fn save_linguistic_vars_setting(
 async fn save_fuzzy_rules(
     db: &web::Data<Client>,
     data: Vec<FuzzyRuleModel>,
-    new_preset_name: &String,
+    new_preset_name: &str,
 ) -> Result<(), CustomError> {
     let dt = data.into_iter().map(|item| FuzzyRuleModelWithOutId {
         input: item.input,
         output: item.output,
         username: item.username,
         valid: item.valid,
-        preset: new_preset_name.clone(),
+        preset: new_preset_name.to_owned(),
     });
 
     let coll = get_rules_coll(db).await?;
@@ -234,13 +231,6 @@ fn objective_func(result: &BacktestResult, reference: &BacktestResult) -> f64 {
     let mdd_change = result.maximum_drawdown.percent - reference.maximum_drawdown.percent;
 
     -1.0 * (profit_change + mdd_change)
-    /*
-    let profit_trades_p = 100.0 * (result.profit_trades.trades as f64 / p_trades);
-    let loss_trades_p = 10.0 * (result.loss_trades.trades as f64 / l_trades);
-    -1.0 * (profit_trades_p + result.total.pnl_percent
-        - result.maximum_drawdown.percent
-        - loss_trades_p)
-    */
 }
 
 /// Using PSO to optimize linguistic variables
@@ -259,7 +249,6 @@ pub async fn linguistic_vars_optimization(
     if strat.signal_conditions.is_empty() {
         return Err(CustomError::ExpectAtlestOneSignalCondition);
     }
-
     // data preparation
     let username = &user.username;
     let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
@@ -345,6 +334,7 @@ pub async fn linguistic_vars_optimization(
     );
 
     let validation_f = objective_func(&validation_result, &first_run_validation);
+
     let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
     let run_at = Utc::now().timestamp_millis();
     let (_, backtest_id) = save_backtest_report(
@@ -386,8 +376,7 @@ pub async fn get_train_results(
 ) -> Result<Vec<TrainResultWithId>, CustomError> {
     let coll = get_train_result_coll(db).await?;
     let find_options = FindOptions::builder().sort(doc! { "run_at": - 1}).build();
-    coll
-        .find(doc! { "username": username}, find_options)
+    coll.find(doc! { "username": username}, find_options)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()
@@ -410,8 +399,8 @@ pub async fn delete_train_result(db: &web::Data<Client>, id: String) -> Result<(
     Ok(())
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TrainJob {
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PSOTrainJob {
     pub symbol: String,
     pub interval: Interval,
     pub preset: String,
@@ -419,44 +408,41 @@ pub struct TrainJob {
     pub strat: Strategy,
 }
 
-impl Job for TrainJob {
-    const NAME: &'static str = "apalis::TrainJob";
-}
-
-async fn train_service(job: TrainJob, ctx: JobContext) -> Result<(), CustomError> {
-    let db = ctx.data_opt().unwrap();
-
-    let TrainJob {
-        symbol,
-        interval,
-        preset,
-        user,
-        strat,
-    } = job;
-
-    info!("Training job {:?} started", ctx.id().inner());
-    linguistic_vars_optimization(db, &symbol, &interval, &preset, &user, strat).await?;
-    info!("Training job {:?} done", ctx.id().inner());
-    Ok(())
-}
-
-pub async fn start_train_queue(
-    client: mongodb::Client,
-) -> Result<RedisStorage<TrainJob>, CustomError> {
-    let redis_url = dotenvy::var("REDIS_URL").unwrap();
-    let storage = RedisStorage::connect(redis_url)
+#[tokio::main]
+pub async fn pso_consumer(
+    mongo_uri: String,
+    receiver: Receiver<PSOTrainJob>,
+    pso_counter: web::Data<Mutex<u32>>,
+) {
+    let client = Client::with_uri_str(mongo_uri)
         .await
-        .map_err(map_internal_err)?;
-
+        .expect("Failed to connect to Mongodb");
     let db = web::Data::new(client);
 
-    let monitor = Monitor::new().register(
-        WorkerBuilder::new("PSO tuner")
-            .layer(Extension(db.clone()))
-            .with_storage(storage.clone())
-            .build_fn(train_service),
-    );
+    while let Ok(job) = receiver.recv() {
+        log::info!("PSO job started");
+        let PSOTrainJob {
+            symbol,
+            interval,
+            preset,
+            user,
+            strat,
+        } = job;
 
-    let _ = tokio::spawn(monitor.run());
-    Ok(storage)
+        let r = linguistic_vars_optimization(&db, &symbol, &interval, &preset, &user, strat).await;
+        match r {
+            Ok(_) => {
+                log::info!("PSO job success")
+            }
+            Err(e) => {
+                log::error!("Error in PSO job: {:?}", e);
+            }
+        }
+
+        {
+            let mut c = *pso_counter.lock().unwrap();
+            c = c.saturating_sub(1);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
 }
