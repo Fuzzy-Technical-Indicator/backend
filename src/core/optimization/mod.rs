@@ -89,9 +89,9 @@ fn create_particle_groups(
     group: usize,
     group_size: usize,
 ) -> Vec<IndividualGroup> {
-    let particle = Individual::new(start_pos.to_vec());
-    let particles = vec![particle; group_size + 1];
-
+    let particles = (0..group_size + 1)
+        .map(|_| Individual::new(start_pos.to_vec()))
+        .collect::<Vec<_>>();
     (0..group)
         .map(|_| IndividualGroup {
             particles: particles[1..].into(),
@@ -223,8 +223,8 @@ fn objective_func(result: &BacktestResult, reference: &BacktestResult) -> f64 {
     -1.0 * (profit_change + mdd_change)
 }
 
-/// Using PSO to optimize linguistic variables
-pub async fn linguistic_vars_optimization(
+/// Cross Validation Version
+pub async fn linguistic_vars_optimization_cv(
     db: &Data<Client>,
     symbol: &String,
     interval: &Interval,
@@ -381,6 +381,146 @@ pub async fn linguistic_vars_optimization(
     Ok(())
 }
 
+/// Normal Version
+pub async fn linguistic_vars_optimization(
+    db: &Data<Client>,
+    symbol: &String,
+    interval: &Interval,
+    preset: &String,
+    user: &User,
+    strat: Strategy,
+) -> Result<(), CustomError> {
+    if strat.signal_conditions.is_empty() {
+        return Err(CustomError::ExpectAtlestOneSignalCondition);
+    }
+    // data preparation
+    let username = &user.username;
+    let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
+    let setting = fetch_setting(db, username, preset).await?;
+    let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
+
+    let fuzzy_inputs = create_input(&setting, &data, user);
+
+    let start_pos = to_particle(&setting.vars);
+    let mut groups = create_particle_groups(&start_pos, 3, 3);
+
+    let mut trained_setting = setting.clone();
+
+    // only work on 1d interval
+    let train_end = match interval {
+        Interval::OneHour => data.0.len() - 8760,  // hour in a year
+        Interval::FourHour => data.0.len() - 2190, // 4-hours in a year
+        Interval::OneDay => data.0.len() - 365,    // day in a year
+    };
+
+    let ohlc = &data.0[..train_end];
+    let ref_run = use_particle(
+        &mut trained_setting,
+        &start_pos,
+        &strat,
+        ohlc,
+        &fuzzy_rules,
+        &fuzzy_inputs,
+        (0, train_end),
+    );
+
+    let mut train_progress: Vec<TrainProgress> = vec![];
+
+    for i in 0..strat.epoch {
+        for (k, g) in groups.iter_mut().enumerate() {
+            for x in g.particles.iter_mut() {
+                let r = use_particle(
+                    &mut trained_setting,
+                    &x.position,
+                    &strat,
+                    ohlc,
+                    &fuzzy_rules,
+                    &fuzzy_inputs,
+                    (0, train_end),
+                );
+
+                let f = objective_func(&r, &ref_run);
+                if f < x.f {
+                    x.f = f;
+                    x.best_pos = x.position.clone();
+                }
+                if f < g.lbest_f {
+                    g.lbest_f = f;
+                    g.lbest_pos = x.position.clone();
+                }
+                x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
+                x.change_pos();
+
+                train_progress.push(TrainProgress {
+                    epoch: i,
+                    group: k,
+                    f,
+                });
+            }
+        }
+        log::info!("epoch: {}", i);
+    }
+    let best_group = groups
+        .into_iter()
+        .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
+        .unwrap();
+
+    let end = data.0.len();
+    let valid_ohlc = &data.0[train_end..end];
+    let ref_run = use_particle(
+        &mut trained_setting,
+        &start_pos,
+        &strat,
+        valid_ohlc,
+        &fuzzy_rules,
+        &fuzzy_inputs,
+        (train_end, end),
+    );
+    let validation_result = use_particle(
+        &mut trained_setting,
+        &best_group.lbest_pos,
+        &strat,
+        valid_ohlc,
+        &fuzzy_rules,
+        &fuzzy_inputs,
+        (train_end, end),
+    );
+    let validation_f = objective_func(&validation_result, &ref_run);
+    log::info!("({}, {}) -> Validation f: {}", train_end, end, validation_f);
+
+    let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
+    let run_at = Utc::now().timestamp_millis();
+    let (_, backtest_id) = save_backtest_report(
+        db,
+        username,
+        symbol,
+        interval,
+        &new_preset_name,
+        BacktestResultWithRequest {
+            result: validation_result,
+            metadata: BacktestMetadata::PsoBackTest(strat.clone()),
+        },
+        run_at,
+    )
+    .await?;
+
+    let mut setting = trained_setting;
+    save_fuzzy_rules(db, fuzzy_rules, &new_preset_name).await?;
+    setting.preset = new_preset_name.clone();
+    save_linguistic_vars_setting(db, setting).await?;
+
+    let train_result = TrainResult {
+        username: username.clone(),
+        preset: new_preset_name,
+        train_progress,
+        backtest_id,
+        validation_f,
+        run_at,
+    };
+    save_train_result(db, train_result.clone()).await?;
+    Ok(())
+}
+
 pub async fn get_train_results(
     db: &web::Data<Client>,
     username: String,
@@ -449,11 +589,9 @@ pub async fn pso_consumer(
                 log::error!("Error in PSO job: {:?}", e);
             }
         }
-
         {
-            let mut c = *pso_counter.lock().unwrap();
-            c = c.saturating_sub(1);
+            let mut c = pso_counter.lock().unwrap();
+            *c = c.saturating_sub(1);
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
 }
