@@ -14,7 +14,7 @@ use core::settings::{LinguisticVarsModel, NewFuzzyRule};
 
 use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Mutex};
-use std::{thread};
+use std::thread;
 
 use actix_cors::Cors;
 use actix_web::dev::ServiceRequest;
@@ -409,7 +409,9 @@ async fn run_pso(
     pso_sender
         .send(job)
         .map_err(|e| ErrorInternalServerError(e.to_string()))?;
-    *pso_counter.lock().unwrap() += 1;
+    {
+        *pso_counter.lock().unwrap() += 1;
+    }
 
     Ok(HttpResponse::Ok().into())
 }
@@ -602,6 +604,7 @@ fn main() {
     let t0 = thread::spawn({
         let mongo_uri = mongo_uri.clone();
         let pso_counter = pso_counter.clone();
+        let backtest_counter = backtest_counter.clone();
         move || {
             main_server(
                 mongo_uri,
@@ -622,7 +625,7 @@ fn main() {
     });
 
     let t2 = thread::spawn(|| {
-        backtest_consumer(mongo_uri, backtest_receiver);
+        backtest_consumer(mongo_uri, backtest_receiver, backtest_counter);
     });
 
     t0.join().expect("Main Service has panicked");

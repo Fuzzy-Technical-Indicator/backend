@@ -3,7 +3,7 @@ use std::{
     sync::{mpsc::Receiver, Mutex},
 };
 
-use actix_web::web;
+use actix_web::web::{self, Data};
 use chrono::Utc;
 use futures::TryStreamExt;
 
@@ -19,8 +19,8 @@ use self::swarm::{gen_rho, Individual, IndividualGroup};
 
 use super::{
     backtest::{
-        backtest, generate_report, get_valid_data, save_backtest_report, BacktestMetadata,
-        BacktestResult, BacktestResultWithRequest, SignalCondition,
+        backtest, generate_report, save_backtest_report, BacktestMetadata, BacktestResult,
+        BacktestResultWithRequest, GetTime, SignalCondition,
     },
     error::{map_internal_err, CustomError},
     fetch_symbol,
@@ -39,9 +39,6 @@ pub mod swarm;
 pub struct Strategy {
     epoch: usize,
     capital: f64,
-    start_time: i64,
-    train_end_time: i64,
-    validation_end_time: i64,
     signal_conditions: Vec<SignalCondition>,
 }
 
@@ -59,9 +56,6 @@ pub struct TrainResult {
     backtest_id: String,
     train_progress: Vec<TrainProgress>,
     validation_f: f64,
-    start_time: i64,
-    train_end_time: i64,
-    validation_end_time: i64,
     run_at: i64,
 }
 
@@ -95,9 +89,9 @@ fn create_particle_groups(
     group: usize,
     group_size: usize,
 ) -> Vec<IndividualGroup> {
-    let particle = Individual::new(start_pos.to_vec());
-    let particles = vec![particle; group_size + 1];
-
+    let particles = (0..group_size + 1)
+        .map(|_| Individual::new(start_pos.to_vec()))
+        .collect::<Vec<_>>();
     (0..group)
         .map(|_| IndividualGroup {
             particles: particles[1..].into(),
@@ -109,7 +103,7 @@ fn create_particle_groups(
 
 fn from_particle(
     linguistic_vars: &LinguisticVarsModel,
-    particle_pos: &mut [f64],
+    particle_pos: &[f64],
 ) -> LinguisticVarsModel {
     let mut copied = linguistic_vars.clone();
 
@@ -125,11 +119,10 @@ fn from_particle(
                     (_, "height") => {
                         *v = particle_pos[i].min(1.0).max(0.0);
                     }
-                    (_, _) => {
+                    _ => {
                         *v = particle_pos[i];
                     }
                 }
-                //*v = particle_pos[i];
                 i += 1; // this is kind of bad
             }
         }
@@ -140,33 +133,27 @@ fn from_particle(
 
 fn use_particle(
     setting: &mut LinguisticVarPresetModel,
-    particle_pos: &mut [f64],
+    particle_pos: &[f64],
     strat: &Strategy,
     valid_ohlc: &[Ohlc],
     fuzzy_rules: &[FuzzyRuleModel],
-    fuzzy_inputs: Vec<(i64, Vec<Option<f64>>)>,
-    is_validation: bool,
+    fuzzy_inputs: &[(i64, Vec<Option<f64>>)],
+    range: (usize, usize),
 ) -> BacktestResult {
     setting.vars = from_particle(&setting.vars, particle_pos);
     let fuzzy_engine = create_fuzzy_engine(setting, fuzzy_rules);
-
-    let fuzzy_output = get_valid_data(
-        fuzzy_indicator(&fuzzy_engine, fuzzy_inputs.clone()),
-        strat.start_time,
-        if is_validation {
-            strat.validation_end_time
-        } else {
-            strat.train_end_time
-        },
-    );
-
+    let fuzzy_output = &fuzzy_indicator(&fuzzy_engine, fuzzy_inputs.to_vec())[range.0..range.1];
     let positions = backtest(
         valid_ohlc,
-        &fuzzy_output,
+        fuzzy_output,
         &strat.signal_conditions,
         strat.capital,
     );
-    generate_report(&positions, strat.capital, strat.start_time)
+    let start_time = valid_ohlc
+        .first()
+        .expect("valid_ohlc should not be empty")
+        .get_time();
+    generate_report(&positions, strat.capital, start_time)
 }
 
 async fn save_linguistic_vars_setting(
@@ -228,66 +215,231 @@ async fn save_train_result(
 
 fn objective_func(result: &BacktestResult, reference: &BacktestResult) -> f64 {
     let profit_change = result.total.pnl_percent - reference.total.pnl_percent;
-    let mdd_change = result.maximum_drawdown.percent - reference.maximum_drawdown.percent;
+    let mdd_change = reference.maximum_drawdown.percent - result.maximum_drawdown.percent;
 
+    if result.total.trades == 0 {
+        return 100.0;
+    }
     -1.0 * (profit_change + mdd_change)
 }
 
-/// Using PSO to optimize linguistic variables
-pub async fn linguistic_vars_optimization(
-    db: &web::Data<Client>,
+/// Cross Validation Version
+pub async fn linguistic_vars_optimization_cv(
+    db: &Data<Client>,
     symbol: &String,
     interval: &Interval,
     preset: &String,
     user: &User,
     strat: Strategy,
-) -> Result<TrainResult, CustomError> {
-    if strat.start_time > strat.train_end_time || strat.train_end_time > strat.validation_end_time {
-        return Err(CustomError::InvalidTimeRange);
-    }
-
+) -> Result<(), CustomError> {
     if strat.signal_conditions.is_empty() {
         return Err(CustomError::ExpectAtlestOneSignalCondition);
     }
     // data preparation
     let username = &user.username;
     let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
-    let mut setting = fetch_setting(db, username, preset).await?;
+    let setting = fetch_setting(db, username, preset).await?;
     let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
 
-    // set initial values for each individual
     let fuzzy_inputs = create_input(&setting, &data, user);
 
-    let mut start_pos = to_particle(&setting.vars);
-    let mut groups = create_particle_groups(&start_pos, 1, 5);
+    // k fold cross validation
+    let k = 5;
+    let offset = data.0.len() / k;
 
-    // train on training period only
-    let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.train_end_time);
-    let first_run_train = use_particle(
-        &mut setting,
-        &mut start_pos,
+    // pair of (start, end)
+    let folds = (0..k - 1)
+        .map(|i| (i * offset, (i + 1) * offset))
+        .chain([((k - 1) * offset, data.0.len())]);
+
+    let mut best_validation_f = f64::MAX;
+    let mut best_validation_res = None;
+    let mut best_train_progress = None;
+    let mut best_setting = None;
+
+    for (start, end) in folds {
+        let start_pos = to_particle(&setting.vars);
+        let mut groups = create_particle_groups(&start_pos, 1, 5);
+
+        let mut trained_setting = setting.clone();
+
+        // use 3/4 of the data for training
+        // train on training period only
+        let train_end = start + ((end - start) as f32 * 0.75).floor() as usize;
+        let ohlc = &data.0[start..train_end];
+        let first_run_train = use_particle(
+            &mut trained_setting,
+            &start_pos,
+            &strat,
+            ohlc,
+            &fuzzy_rules,
+            &fuzzy_inputs,
+            (start, train_end),
+        );
+
+        let mut train_progress: Vec<TrainProgress> = vec![];
+
+        for i in 0..strat.epoch {
+            for (k, g) in groups.iter_mut().enumerate() {
+                for x in g.particles.iter_mut() {
+                    let r = use_particle(
+                        &mut trained_setting,
+                        &x.position,
+                        &strat,
+                        ohlc,
+                        &fuzzy_rules,
+                        &fuzzy_inputs,
+                        (start, train_end),
+                    );
+
+                    let f = objective_func(&r, &first_run_train);
+                    if f < x.f {
+                        x.f = f;
+                        x.best_pos = x.position.clone();
+                    }
+                    if f < g.lbest_f {
+                        g.lbest_f = f;
+                        g.lbest_pos = x.position.clone();
+                    }
+                    x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
+                    x.change_pos();
+
+                    train_progress.push(TrainProgress {
+                        epoch: i,
+                        group: k,
+                        f,
+                    });
+                }
+            }
+        }
+        let best_group = groups
+            .into_iter()
+            .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
+            .unwrap();
+
+        let valid_ohlc = &data.0[train_end..end];
+        let first_run_validation = use_particle(
+            &mut trained_setting,
+            &start_pos,
+            &strat,
+            valid_ohlc,
+            &fuzzy_rules,
+            &fuzzy_inputs,
+            (train_end, end),
+        );
+        let validation_result = use_particle(
+            &mut trained_setting,
+            &best_group.lbest_pos,
+            &strat,
+            valid_ohlc,
+            &fuzzy_rules,
+            &fuzzy_inputs,
+            (train_end, end),
+        );
+        let validation_f = objective_func(&validation_result, &first_run_validation);
+
+        log::info!("({}, {}) -> Validation f: {}", start, end, validation_f);
+
+        if validation_f < best_validation_f {
+            best_validation_f = validation_f;
+            best_validation_res = Some(validation_result);
+            best_train_progress = Some(train_progress);
+            best_setting = Some(trained_setting);
+        }
+    }
+
+    let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
+    let run_at = Utc::now().timestamp_millis();
+    let (_, backtest_id) = save_backtest_report(
+        db,
+        username,
+        symbol,
+        interval,
+        &new_preset_name,
+        BacktestResultWithRequest {
+            result: best_validation_res.expect("This should not be None"),
+            metadata: BacktestMetadata::PsoBackTest(strat.clone()),
+        },
+        run_at,
+    )
+    .await?;
+
+    let mut setting = best_setting.expect("This should not be None");
+    save_fuzzy_rules(db, fuzzy_rules, &new_preset_name).await?;
+    setting.preset = new_preset_name.clone();
+    save_linguistic_vars_setting(db, setting).await?;
+
+    let train_result = TrainResult {
+        username: username.clone(),
+        preset: new_preset_name,
+        train_progress: best_train_progress.expect("This should not be None"),
+        backtest_id,
+        validation_f: best_validation_f,
+        run_at,
+    };
+    save_train_result(db, train_result.clone()).await?;
+    Ok(())
+}
+
+/// Normal Version
+pub async fn linguistic_vars_optimization(
+    db: &Data<Client>,
+    symbol: &String,
+    interval: &Interval,
+    preset: &String,
+    user: &User,
+    strat: Strategy,
+) -> Result<(), CustomError> {
+    if strat.signal_conditions.is_empty() {
+        return Err(CustomError::ExpectAtlestOneSignalCondition);
+    }
+    // data preparation
+    let username = &user.username;
+    let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
+    let setting = fetch_setting(db, username, preset).await?;
+    let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
+
+    let fuzzy_inputs = create_input(&setting, &data, user);
+
+    let start_pos = to_particle(&setting.vars);
+    let mut groups = create_particle_groups(&start_pos, 3, 3);
+
+    let mut trained_setting = setting.clone();
+
+    // only work on 1d interval
+    let train_end = match interval {
+        Interval::OneHour => data.0.len() - 8760,  // hour in a year
+        Interval::FourHour => data.0.len() - 2190, // 4-hours in a year
+        Interval::OneDay => data.0.len() - 365,    // day in a year
+    };
+
+    let ohlc = &data.0[..train_end];
+    let ref_run = use_particle(
+        &mut trained_setting,
+        &start_pos,
         &strat,
-        &valid_ohlc,
+        ohlc,
         &fuzzy_rules,
-        fuzzy_inputs.clone(),
-        false,
+        &fuzzy_inputs,
+        (0, train_end),
     );
 
     let mut train_progress: Vec<TrainProgress> = vec![];
+
     for i in 0..strat.epoch {
         for (k, g) in groups.iter_mut().enumerate() {
             for x in g.particles.iter_mut() {
                 let r = use_particle(
-                    &mut setting,
-                    &mut x.position,
+                    &mut trained_setting,
+                    &x.position,
                     &strat,
-                    &valid_ohlc,
+                    ohlc,
                     &fuzzy_rules,
-                    fuzzy_inputs.clone(),
-                    false,
+                    &fuzzy_inputs,
+                    (0, train_end),
                 );
 
-                let f = objective_func(&r, &first_run_train);
+                let f = objective_func(&r, &ref_run);
                 if f < x.f {
                     x.f = f;
                     x.best_pos = x.position.clone();
@@ -306,34 +458,35 @@ pub async fn linguistic_vars_optimization(
                 });
             }
         }
+        log::info!("epoch: {}", i);
     }
-
-    let mut best_group = groups
+    let best_group = groups
         .into_iter()
         .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
         .unwrap();
 
-    let valid_ohlc = get_valid_data(data.0.clone(), strat.start_time, strat.validation_end_time);
-    let first_run_validation = use_particle(
-        &mut setting,
-        &mut start_pos,
+    let end = data.0.len();
+    let valid_ohlc = &data.0[train_end..end];
+    let ref_run = use_particle(
+        &mut trained_setting,
+        &start_pos,
         &strat,
-        &valid_ohlc,
+        valid_ohlc,
         &fuzzy_rules,
-        fuzzy_inputs.clone(),
-        true,
+        &fuzzy_inputs,
+        (train_end, end),
     );
     let validation_result = use_particle(
-        &mut setting,
-        &mut best_group.lbest_pos,
+        &mut trained_setting,
+        &best_group.lbest_pos,
         &strat,
-        &valid_ohlc,
+        valid_ohlc,
         &fuzzy_rules,
-        fuzzy_inputs,
-        true,
+        &fuzzy_inputs,
+        (train_end, end),
     );
-
-    let validation_f = objective_func(&validation_result, &first_run_validation);
+    let validation_f = objective_func(&validation_result, &ref_run);
+    log::info!("({}, {}) -> Validation f: {}", train_end, end, validation_f);
 
     let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
     let run_at = Utc::now().timestamp_millis();
@@ -351,6 +504,7 @@ pub async fn linguistic_vars_optimization(
     )
     .await?;
 
+    let mut setting = trained_setting;
     save_fuzzy_rules(db, fuzzy_rules, &new_preset_name).await?;
     setting.preset = new_preset_name.clone();
     save_linguistic_vars_setting(db, setting).await?;
@@ -361,13 +515,10 @@ pub async fn linguistic_vars_optimization(
         train_progress,
         backtest_id,
         validation_f,
-        start_time: strat.start_time,
-        train_end_time: strat.train_end_time,
-        validation_end_time: strat.validation_end_time,
         run_at,
     };
     save_train_result(db, train_result.clone()).await?;
-    Ok(train_result)
+    Ok(())
 }
 
 pub async fn get_train_results(
@@ -438,11 +589,9 @@ pub async fn pso_consumer(
                 log::error!("Error in PSO job: {:?}", e);
             }
         }
-
         {
-            let mut c = *pso_counter.lock().unwrap();
-            c = c.saturating_sub(1);
+            let mut c = pso_counter.lock().unwrap();
+            *c = c.saturating_sub(1);
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
 }

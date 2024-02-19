@@ -1,7 +1,11 @@
-use std::{collections::BTreeMap, str::FromStr, sync::mpsc::Receiver};
+use std::{
+    collections::BTreeMap,
+    str::FromStr,
+    sync::{mpsc::Receiver, Mutex},
+};
 
 use crate::core::Interval;
-use actix_web::web::{self};
+use actix_web::web::{self, Data};
 use chrono::Utc;
 use futures::TryStreamExt;
 use mongodb::{
@@ -657,7 +661,11 @@ pub async fn create_random_backtest_report(
 }
 
 #[tokio::main]
-pub async fn backtest_consumer(mongo_uri: String, receiver: Receiver<BacktestJob>) {
+pub async fn backtest_consumer(
+    mongo_uri: String,
+    receiver: Receiver<BacktestJob>,
+    counter: Data<Mutex<u32>>,
+) {
     let client = Client::with_uri_str(mongo_uri)
         .await
         .expect("Failed to connect to Mongodb");
@@ -682,6 +690,9 @@ pub async fn backtest_consumer(mongo_uri: String, receiver: Receiver<BacktestJob
                 log::error!("Error in Backtest job: {:?}", e);
             }
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        {
+            let mut c = counter.lock().unwrap();
+            *c = c.saturating_sub(1);
+        }
     }
 }
