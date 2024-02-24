@@ -40,6 +40,8 @@ pub struct Strategy {
     epoch: usize,
     capital: f64,
     signal_conditions: Vec<SignalCondition>,
+    validation_period: usize, // in mounth
+    test_start: i64,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -142,13 +144,16 @@ fn use_particle(
 ) -> BacktestResult {
     setting.vars = from_particle(&setting.vars, particle_pos);
     let fuzzy_engine = create_fuzzy_engine(setting, fuzzy_rules);
+    log::info!("lin start");
     let fuzzy_output = &fuzzy_indicator(&fuzzy_engine, fuzzy_inputs.to_vec())[range.0..range.1];
+    log::info!("lin ended");
     let positions = backtest(
         valid_ohlc,
         fuzzy_output,
         &strat.signal_conditions,
         strat.capital,
     );
+    log::info!("backtest ended");
     let start_time = valid_ohlc
         .first()
         .expect("valid_ohlc should not be empty")
@@ -218,7 +223,7 @@ fn objective_func(result: &BacktestResult, reference: &BacktestResult) -> f64 {
     let mdd_change = reference.maximum_drawdown.percent - result.maximum_drawdown.percent;
 
     if result.total.trades == 0 {
-        return 100.0;
+        return 50.0;
     }
     -1.0 * (profit_change + mdd_change)
 }
@@ -406,12 +411,25 @@ pub async fn linguistic_vars_optimization(
 
     let mut trained_setting = setting.clone();
 
-    // only work on 1d interval
+    let test_start = data
+        .0
+        .iter()
+        .map(|item| (item.get_time() - strat.test_start).abs())
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.cmp(b))
+        .map(|(i, _)| i)
+        .unwrap();
+
     let train_end = match interval {
-        Interval::OneHour => data.0.len() - 8760,  // hour in a year
-        Interval::FourHour => data.0.len() - 2190, // 4-hours in a year
-        Interval::OneDay => data.0.len() - 365,    // day in a year
+        // hour in a month
+        Interval::OneHour => test_start.saturating_sub(strat.validation_period * 30 * 24),
+        // 4-hours in a month
+        Interval::FourHour => test_start.saturating_sub(strat.validation_period * 30 * 6),
+        // day in a month
+        Interval::OneDay => test_start.saturating_sub(strat.validation_period * 30),
     };
+
+    log::info!("{}, {}", test_start, train_end);
 
     let ohlc = &data.0[..train_end];
     let ref_run = use_particle(
@@ -424,7 +442,21 @@ pub async fn linguistic_vars_optimization(
         (0, train_end),
     );
 
+    let valid_ohlc = &data.0[train_end..test_start];
+    let valid_ref_run = use_particle(
+        &mut trained_setting,
+        &start_pos,
+        &strat,
+        valid_ohlc,
+        &fuzzy_rules,
+        &fuzzy_inputs,
+        (train_end, test_start),
+    );
+
     let mut train_progress: Vec<TrainProgress> = vec![];
+
+    let mut best_validation_f = f64::MAX;
+    let mut best_ind = None;
 
     for i in 0..strat.epoch {
         for (k, g) in groups.iter_mut().enumerate() {
@@ -458,35 +490,60 @@ pub async fn linguistic_vars_optimization(
                 });
             }
         }
+
+        let best_group = groups
+            .iter()
+            .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
+            .unwrap();
+
+        let validation_result = use_particle(
+            &mut trained_setting,
+            &best_group.lbest_pos,
+            &strat,
+            valid_ohlc,
+            &fuzzy_rules,
+            &fuzzy_inputs,
+            (train_end, test_start),
+        );
+        let validation_f = objective_func(&validation_result, &valid_ref_run);
+
+        if validation_f < best_validation_f {
+            best_validation_f = validation_f;
+            best_ind = Some(best_group.lbest_pos.clone());
+        }
+
         log::info!("epoch: {}", i);
+        log::info!(
+            "({}, {}) -> Validation f: {}",
+            train_end,
+            test_start,
+            validation_f
+        );
     }
-    let best_group = groups
-        .into_iter()
-        .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
-        .unwrap();
 
     let end = data.0.len();
-    let valid_ohlc = &data.0[train_end..end];
-    let ref_run = use_particle(
+    let valid_ohlc = &data.0[test_start..end];
+    let test_ref_run = use_particle(
         &mut trained_setting,
         &start_pos,
         &strat,
         valid_ohlc,
         &fuzzy_rules,
         &fuzzy_inputs,
-        (train_end, end),
+        (test_start, end),
     );
-    let validation_result = use_particle(
-        &mut trained_setting,
-        &best_group.lbest_pos,
+
+    let mut best_setting = setting.clone();
+    let test_result = use_particle(
+        &mut best_setting,
+        &best_ind.expect("This should not be None"),
         &strat,
         valid_ohlc,
         &fuzzy_rules,
         &fuzzy_inputs,
-        (train_end, end),
+        (test_start, end),
     );
-    let validation_f = objective_func(&validation_result, &ref_run);
-    log::info!("({}, {}) -> Validation f: {}", train_end, end, validation_f);
+    let test_f = objective_func(&test_result, &test_ref_run);
 
     let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
     let run_at = Utc::now().timestamp_millis();
@@ -497,24 +554,23 @@ pub async fn linguistic_vars_optimization(
         interval,
         &new_preset_name,
         BacktestResultWithRequest {
-            result: validation_result,
+            result: test_result,
             metadata: BacktestMetadata::PsoBackTest(strat.clone()),
         },
         run_at,
     )
     .await?;
 
-    let mut setting = trained_setting;
     save_fuzzy_rules(db, fuzzy_rules, &new_preset_name).await?;
-    setting.preset = new_preset_name.clone();
-    save_linguistic_vars_setting(db, setting).await?;
+    best_setting.preset = new_preset_name.clone();
+    save_linguistic_vars_setting(db, best_setting).await?;
 
     let train_result = TrainResult {
         username: username.clone(),
         preset: new_preset_name,
         train_progress,
         backtest_id,
-        validation_f,
+        validation_f: test_f,
         run_at,
     };
     save_train_result(db, train_result.clone()).await?;

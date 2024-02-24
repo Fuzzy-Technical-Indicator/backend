@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     str::FromStr,
     sync::{mpsc::Receiver, Mutex},
+    time::Instant,
 };
 
 use crate::core::Interval;
@@ -13,7 +14,8 @@ use mongodb::{
     options::FindOptions,
     Client, Collection,
 };
-use rand::distributions::{Distribution, Uniform};
+use rand::distributions::{Distribution};
+use rayon::iter::{ParallelIterator};
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
 
@@ -91,32 +93,32 @@ pub enum CapitalManagement {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SignalCondition {
-    signal_index: u64,
-    signal_threshold: f64,
-    signal_do_command: PosType,
-    take_profit_when: f64,
-    stop_loss_when: f64,
-    capital_management: CapitalManagement,
+    pub signal_index: u64,
+    pub signal_threshold: f64,
+    pub signal_do_command: PosType,
+    pub take_profit_when: f64,
+    pub stop_loss_when: f64,
+    pub capital_management: CapitalManagement,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct BacktestRequest {
-    capital: f64,
-    start_time: i64,
-    end_time: i64,
-    signal_conditions: Vec<SignalCondition>,
+    pub capital: f64,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub signal_conditions: Vec<SignalCondition>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Trades {
-    pnl: f64,
+    pub pnl: f64,
     pub pnl_percent: f64,
     pub trades: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct MaximumDrawdown {
-    amount: f64,
+    pub amount: f64,
     pub percent: f64,
 }
 
@@ -157,6 +159,12 @@ pub struct BacktestReport {
     fuzzy_preset: String,
     backtest_result: BacktestResultWithRequest,
     run_at: i64,
+}
+
+impl BacktestReport {
+    pub fn get_backtest_result(&self) -> BacktestResult {
+        self.backtest_result.result.clone()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -299,84 +307,6 @@ fn liquid_f_entry_size(
         .min(working_capital)
 }
 
-fn random_backtest(
-    valid_ohlc: &[Ohlc],
-    initial_capital: f64,
-    condition: SignalCondition,
-    start_time: i64,
-) -> (MaximumDrawdown, Trades) {
-    let mut rng = rand::thread_rng();
-    let coin = Uniform::from(0..=1);
-
-    let rounds = 5;
-    (0..=rounds)
-        .map(|_| {
-            let mut working_capital = initial_capital;
-            let mut positions: Vec<Position> = vec![];
-            for ohlc in valid_ohlc {
-                realize_positions(&mut positions, &mut working_capital, ohlc, false);
-
-                // toss a coin to determine whether to enter or not
-                if coin.sample(&mut rng) == 0 && working_capital <= 0.0 {
-                    continue;
-                }
-
-                let entry_amount = match condition.capital_management {
-                    CapitalManagement::Normal {
-                        entry_size_percent,
-                        min_entry_size,
-                    } => (((entry_size_percent / 100.0) * working_capital).max(min_entry_size))
-                        .min(working_capital),
-                    CapitalManagement::LiquidF { min_entry_size } => min_entry_size,
-                };
-
-                working_capital -= entry_amount;
-                positions.push(Position::new(
-                    ohlc.close,
-                    ohlc.time.timestamp_millis(),
-                    entry_amount,
-                    condition.take_profit_when,
-                    condition.stop_loss_when,
-                    condition.signal_do_command.clone(),
-                ));
-            }
-            // realized the remaining positions
-            let last_ohlc = valid_ohlc
-                .last()
-                .expect("valid_ohlc should have at least 1 item");
-            realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
-
-            let result = generate_report(&positions, initial_capital, start_time);
-            (result.maximum_drawdown, result.total)
-        })
-        .fold(
-            (
-                MaximumDrawdown {
-                    amount: 0.0,
-                    percent: 0.0,
-                },
-                Trades {
-                    pnl_percent: 0.0,
-                    pnl: 0.0,
-                    trades: 0,
-                },
-            ),
-            |acc, (m, t)| {
-                (
-                    MaximumDrawdown {
-                        amount: acc.0.amount + m.amount / rounds as f64,
-                        percent: acc.0.percent + m.percent / rounds as f64,
-                    },
-                    Trades {
-                        pnl: acc.1.pnl + t.pnl / rounds as f64,
-                        pnl_percent: acc.1.pnl_percent + t.pnl_percent / rounds as f64,
-                        trades: acc.1.trades + t.trades / rounds,
-                    },
-                )
-            },
-        )
-}
-
 pub fn backtest(
     valid_ohlc: &[Ohlc],
     valid_fuzzy_output: &[DTValue<Vec<f64>>],
@@ -384,9 +314,10 @@ pub fn backtest(
     initial_capital: f64,
 ) -> Vec<Position> {
     use CapitalManagement::*;
-    let mut working_capital = initial_capital;
-    let mut positions: Vec<Position> = vec![];
+    let now = Instant::now();
 
+    let mut working_capital = initial_capital;
+    let mut positions: Vec<Position> = Vec::with_capacity(1000);
     for (ohlc, signal) in valid_ohlc.iter().zip(valid_fuzzy_output.iter()) {
         // check if the previous position need to be closed or not
         realize_positions(&mut positions, &mut working_capital, ohlc, false);
@@ -399,9 +330,6 @@ pub fn backtest(
         for condition in signal_conditions {
             let signal_v = signal.value[condition.signal_index as usize];
             if signal_v > condition.signal_threshold {
-                // if we enter a position, determine the size of the position and enter it
-                // maybe we can many methods of position sizing
-
                 let entry_amount = match condition.capital_management {
                     Normal {
                         entry_size_percent,
@@ -413,7 +341,7 @@ pub fn backtest(
                         min_entry_size,
                         working_capital,
                         signal_v,
-                        100.0,
+                        100.0, // TODO
                         condition.signal_threshold,
                     ),
                 };
@@ -437,6 +365,7 @@ pub fn backtest(
         .expect("valid_ohlc should have at least 1 item");
 
     realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
+    log::info!("backtest time: {}", now.elapsed().as_millis());
     positions
 }
 
@@ -630,34 +559,6 @@ pub async fn delete_backtest_report(db: &web::Data<Client>, id: String) -> Resul
         return Err(CustomError::BacktestReportNotFound);
     }
     Ok(())
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct RandomBacktestReport {
-    maximum_drawdown: MaximumDrawdown,
-    total: Trades,
-}
-
-pub async fn create_random_backtest_report(
-    db: web::Data<Client>,
-    request: BacktestRequest,
-    symbol: &str,
-    interval: &Interval,
-) -> RandomBacktestReport {
-    let ohlc_data = fetch_symbol(&db, symbol, &Some(interval.clone())).await;
-    let valid_ohlc = get_valid_data(ohlc_data.0, request.start_time, request.end_time);
-
-    let (maximum_drawdown, total) = random_backtest(
-        &valid_ohlc,
-        request.capital,
-        request.signal_conditions[0].clone(),
-        request.start_time,
-    );
-
-    RandomBacktestReport {
-        maximum_drawdown,
-        total,
-    }
 }
 
 #[tokio::main]

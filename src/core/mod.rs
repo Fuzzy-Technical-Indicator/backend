@@ -26,7 +26,6 @@ use self::{
     users::User,
 };
 
-const DEBUG: bool = false;
 pub const DB_NAME: &str = "StockMarket";
 
 #[derive(Deserialize, Serialize, Debug, PartialEq, Clone, Hash, Eq)]
@@ -128,18 +127,9 @@ pub async fn fetch_symbol(
     symbol: &str,
     interval: &Option<Interval>,
 ) -> (Vec<Ohlc>, String) {
-    let now = Instant::now();
-
     let db_client = (*db).database(DB_NAME);
     let collection = db_client.collection::<Ohlc>(symbol);
     let result = aggr_fetch(&collection, interval).await;
-
-    if DEBUG {
-        println!(
-            "fetch_symbol, time elapsed: {}ms",
-            now.elapsed().as_millis()
-        );
-    }
 
     let label = format!("{}{:?}", symbol, interval);
     (result, label)
