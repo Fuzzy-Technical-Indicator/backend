@@ -40,9 +40,9 @@ pub enum PosType {
 
 #[derive(Debug, Clone, Copy)]
 pub struct RealizedInfo {
-    pnl: f64,
+    pub pnl: f64,
     exit_price: f64,
-    exit_time: i64,
+    pub exit_time: i64,
 }
 
 #[derive(Debug)]
@@ -55,7 +55,7 @@ pub struct Position {
     stop_loss_when: f64,
     pos_type: PosType,
 
-    realized: Option<RealizedInfo>,
+    pub realized: Option<RealizedInfo>,
 }
 
 impl Position {
@@ -122,7 +122,7 @@ pub struct MaximumDrawdown {
     pub percent: f64,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CumalativeReturn {
     pub time: i64,
     pub value: f64,
@@ -483,7 +483,7 @@ pub async fn create_backtest_report(
     symbol: &String,
     interval: &Interval,
     preset: &String,
-) -> Result<BacktestReport, CustomError> {
+) -> Result<(BacktestReport, Vec<Position>), CustomError> {
     let ohlc_data = fetch_symbol(&db, symbol, &Some(interval.clone())).await;
     let fuzzy_config = get_fuzzy_config(&db, &ohlc_data, preset, user).await?;
     let fuzzy_output = fuzzy_indicator(&fuzzy_config.0, fuzzy_config.1);
@@ -504,17 +504,44 @@ pub async fn create_backtest_report(
     };
 
     let run_at = Utc::now().timestamp_millis();
-    Ok(save_backtest_report(
-        &db,
-        &user.username,
-        symbol,
-        interval,
-        preset,
-        backtest_result,
-        run_at,
-    )
-    .await?
-    .0)
+    Ok((
+        save_backtest_report(
+            &db,
+            &user.username,
+            symbol,
+            interval,
+            preset,
+            backtest_result,
+            run_at,
+        )
+        .await?
+        .0,
+        positions,
+    ))
+}
+
+pub async fn buy_and_hold(
+    db: &web::Data<Client>,
+    symbol: &str,
+    interval: &Interval,
+    initial_capital: f64,
+    start_time: i64,
+    end_time: i64,
+) -> (f64, Vec<(f64, i64)>) {
+    let ohlc_data = fetch_symbol(&db, symbol, &Some(interval.clone())).await;
+    let valid_ohlc = get_valid_data(ohlc_data.0, start_time, end_time);
+
+    let first_ohlc = valid_ohlc.first().expect("This should not be None");
+
+    let amount = initial_capital;
+    let enter_price = first_ohlc.close;
+    let mut result = vec![];
+    for ohlc in valid_ohlc[1..].iter() {
+        let realized_amount = (amount / enter_price) * ohlc.close;
+        let pnl = realized_amount - amount;
+        result.push((pnl, ohlc.get_time()));
+    }
+    (result.last().expect("This should not be None").0, result)
 }
 
 pub async fn get_backtest_reports(
