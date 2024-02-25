@@ -14,8 +14,8 @@ use mongodb::{
     options::FindOptions,
     Client, Collection,
 };
-use rand::distributions::{Distribution};
-use rayon::iter::{ParallelIterator};
+use rand::distributions::Distribution;
+use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
 
@@ -124,8 +124,8 @@ pub struct MaximumDrawdown {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CumalativeReturn {
-    time: i64,
-    value: f64,
+    pub time: i64,
+    pub value: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -408,9 +408,8 @@ pub fn generate_report(
             if let Some(rel) = &p.realized {
                 if rel.pnl >= 0.0 {
                     return ((acc.0 .0 + rel.pnl, acc.0 .1 + 1), acc.1);
-                } else {
-                    return (acc.0, (acc.1 .0 + rel.pnl, acc.1 .1 + 1));
                 }
+                return (acc.0, (acc.1 .0 + rel.pnl, acc.1 .1 + 1));
             }
             acc
         });

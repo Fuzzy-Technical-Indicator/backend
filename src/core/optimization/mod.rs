@@ -1,6 +1,6 @@
 use std::{
     str::FromStr,
-    sync::{mpsc::Receiver, Mutex},
+    sync::{mpsc::Receiver, Arc, Mutex},
 };
 
 use actix_web::web::{self, Data};
@@ -32,6 +32,7 @@ use super::{
     users::User,
     Interval, DB_NAME,
 };
+use rayon::prelude::*;
 
 pub mod swarm;
 
@@ -144,16 +145,13 @@ fn use_particle(
 ) -> BacktestResult {
     setting.vars = from_particle(&setting.vars, particle_pos);
     let fuzzy_engine = create_fuzzy_engine(setting, fuzzy_rules);
-    log::info!("lin start");
     let fuzzy_output = &fuzzy_indicator(&fuzzy_engine, fuzzy_inputs.to_vec())[range.0..range.1];
-    log::info!("lin ended");
     let positions = backtest(
         valid_ohlc,
         fuzzy_output,
         &strat.signal_conditions,
         strat.capital,
     );
-    log::info!("backtest ended");
     let start_time = valid_ohlc
         .first()
         .expect("valid_ohlc should not be empty")
@@ -429,7 +427,7 @@ pub async fn linguistic_vars_optimization(
         Interval::OneDay => test_start.saturating_sub(strat.validation_period * 30),
     };
 
-    log::info!("{}, {}", test_start, train_end);
+    log::info!("{}, {}", train_end, test_start);
 
     let ohlc = &data.0[..train_end];
     let ref_run = use_particle(
@@ -453,16 +451,17 @@ pub async fn linguistic_vars_optimization(
         (train_end, test_start),
     );
 
-    let mut train_progress: Vec<TrainProgress> = vec![];
+    let train_progress = Arc::new(Mutex::new(vec![]));
 
     let mut best_validation_f = f64::MAX;
     let mut best_ind = None;
 
     for i in 0..strat.epoch {
-        for (k, g) in groups.iter_mut().enumerate() {
+        groups.par_iter_mut().enumerate().for_each(|(k, g)| {
+            let mut inner_setting = trained_setting.clone();
             for x in g.particles.iter_mut() {
                 let r = use_particle(
-                    &mut trained_setting,
+                    &mut inner_setting,
                     &x.position,
                     &strat,
                     ohlc,
@@ -483,13 +482,16 @@ pub async fn linguistic_vars_optimization(
                 x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
                 x.change_pos();
 
-                train_progress.push(TrainProgress {
-                    epoch: i,
-                    group: k,
-                    f,
-                });
+                {
+                    let mut tp = train_progress.lock().unwrap();
+                    (*tp).push(TrainProgress {
+                        epoch: i,
+                        group: k,
+                        f,
+                    });
+                }
             }
-        }
+        });
 
         let best_group = groups
             .iter()
@@ -565,6 +567,7 @@ pub async fn linguistic_vars_optimization(
     best_setting.preset = new_preset_name.clone();
     save_linguistic_vars_setting(db, best_setting).await?;
 
+    let train_progress = train_progress.lock().unwrap().clone();
     let train_result = TrainResult {
         username: username.clone(),
         preset: new_preset_name,
