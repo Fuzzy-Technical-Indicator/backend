@@ -20,13 +20,18 @@ const STOCKS: [&str; 6] = [
 const TEST_START: i64 = 1696093200000;
 const TEST_END: i64 = 1708771859000;
 const CAPITAL: f64 = 3000.0;
-const INTERVAL: Interval = Interval::OneDay;
+const INTERVAL: Interval = Interval::OneHour;
 
 enum FuzzyKind {
     Normal,
     WithCapitalManagement,
     PSO,
     PSOWithCapitalManagement,
+}
+
+enum Asset {
+    Crypto,
+    Stock,
 }
 
 fn transform_positions(ls: Vec<Vec<Position>>) -> Vec<(f64, i64)> {
@@ -59,23 +64,47 @@ fn calc_cumlative_return(
     g
 }
 
-async fn buy_and_hold(db: &Data<Client>) -> (HashMap<String, f64>, BTreeMap<i64, f64>) {
+async fn buy_and_hold(
+    db: &Data<Client>,
+    asset: &Asset,
+) -> (HashMap<String, f64>, BTreeMap<i64, f64>) {
     let mut pnls_list = vec![];
     let mut net_profits = HashMap::new();
-    for symbol in CRYPTOS {
-        let (net_profit, pnls) = backtest::buy_and_hold(
-            db,
-            symbol,
-            &INTERVAL,
-            CAPITAL / CRYPTOS.len() as f64,
-            TEST_START,
-            TEST_END,
-        )
-        .await;
 
-        net_profits.insert(symbol.to_string(), net_profit);
-        pnls_list.push(pnls);
-    }
+    match asset {
+        Asset::Crypto => {
+            for symbol in CRYPTOS {
+                let (net_profit, pnls) = backtest::buy_and_hold(
+                    db,
+                    symbol,
+                    &INTERVAL,
+                    CAPITAL / CRYPTOS.len() as f64,
+                    TEST_START,
+                    TEST_END,
+                )
+                .await;
+
+                net_profits.insert(symbol.to_string(), net_profit);
+                pnls_list.push(pnls);
+            }
+        }
+        Asset::Stock => {
+            for symbol in STOCKS {
+                let (net_profit, pnls) = backtest::buy_and_hold(
+                    db,
+                    symbol,
+                    &INTERVAL,
+                    CAPITAL / STOCKS.len() as f64,
+                    TEST_START,
+                    TEST_END,
+                )
+                .await;
+
+                net_profits.insert(symbol.to_string(), net_profit);
+                pnls_list.push(pnls);
+            }
+        }
+    };
 
     let mut flattend = pnls_list.into_iter().flatten().collect::<Vec<_>>();
     flattend.sort_by(|a, b| a.1.cmp(&b.1));
@@ -92,6 +121,7 @@ async fn fuzzy(
     db: &Data<Client>,
     user: &User,
     kind: FuzzyKind,
+    asset: &Asset,
 ) -> (HashMap<String, f64>, BTreeMap<i64, f64>) {
     use FuzzyKind::*;
 
@@ -111,8 +141,13 @@ async fn fuzzy(
         },
     };
 
+    let choices_len = match asset {
+        Asset::Crypto => CRYPTOS.len(),
+        Asset::Stock => STOCKS.len(),
+    };
+
     let request = BacktestRequest {
-        capital: CAPITAL / CRYPTOS.len() as f64,
+        capital: CAPITAL / choices_len as f64,
         start_time: TEST_START,
         end_time: TEST_END,
         signal_conditions: vec![SignalCondition {
@@ -128,22 +163,45 @@ async fn fuzzy(
     let mut positions_list = vec![];
     let mut net_profits = HashMap::new();
 
-    for symbol in CRYPTOS {
-        let (r, pos) = create_backtest_report(
-            db.clone(),
-            request.clone(),
-            user,
-            &symbol.to_string(),
-            &INTERVAL,
-            &preset,
-        )
-        .await
-        .unwrap();
+    match asset {
+        Asset::Crypto => {
+            for symbol in CRYPTOS {
+                let (r, pos) = create_backtest_report(
+                    db.clone(),
+                    request.clone(),
+                    user,
+                    &symbol.to_string(),
+                    &INTERVAL,
+                    &preset,
+                )
+                .await
+                .unwrap();
 
-        let result = r.get_backtest_result();
+                let result = r.get_backtest_result();
 
-        net_profits.insert(symbol.to_string(), result.total.pnl);
-        positions_list.push(pos);
+                net_profits.insert(symbol.to_string(), result.total.pnl);
+                positions_list.push(pos);
+            }
+        }
+        Asset::Stock => {
+            for symbol in STOCKS {
+                let (r, pos) = create_backtest_report(
+                    db.clone(),
+                    request.clone(),
+                    user,
+                    &symbol.to_string(),
+                    &INTERVAL,
+                    &preset,
+                )
+                .await
+                .unwrap();
+
+                let result = r.get_backtest_result();
+
+                net_profits.insert(symbol.to_string(), result.total.pnl);
+                positions_list.push(pos);
+            }
+        }
     }
 
     let result = calc_cumlative_return(transform_positions(positions_list), CAPITAL, TEST_START);
@@ -151,20 +209,10 @@ async fn fuzzy(
     (net_profits, result)
 }
 
-#[tokio::main]
-async fn main() {
-    let uri = dotenvy::var("MONGO_DB_URI").unwrap();
-    let db = Data::new(
-        Client::with_uri_str(uri)
-            .await
-            .expect("Failed to connect to Mongodb"),
-    );
-
-    let user = auth_user(&db, "tanat").await.unwrap();
-    let (_, g1) = buy_and_hold(&db).await;
-
-    let (_, g2) = fuzzy(&db, &user, FuzzyKind::Normal).await;
-    let (_, g3) = fuzzy(&db, &user, FuzzyKind::WithCapitalManagement).await;
+async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
+    let (_, g1) = buy_and_hold(&db, asset).await;
+    let (_, g2) = fuzzy(&db, &user, FuzzyKind::Normal, asset).await;
+    let (_, g3) = fuzzy(&db, &user, FuzzyKind::WithCapitalManagement, asset).await;
 
     let mut data = g1
         .iter()
@@ -177,14 +225,35 @@ async fn main() {
         data.entry(k).and_modify(|ls| ls.append(&mut vec![v1, v2]));
     }
 
-    let mut writer = csv::Writer::from_path("data.csv").unwrap();
-    writer.write_record(&["time", "bh", "fuzzy", "fuzzy c"]).unwrap();
+    let mut writer = csv::Writer::from_path(match asset {
+        Asset::Crypto => "experiment_graph/data.csv",
+        Asset::Stock => "experiment_graph/data_stock.csv",
+    })
+    .unwrap();
+    writer
+        .write_record(&["time", "bh", "fuzzy", "fuzzy c"])
+        .unwrap();
 
     for (k, v) in data {
         writer.serialize((k, v[0], v[1], v[2])).unwrap();
     }
 
     writer.flush().unwrap();
+}
+
+#[tokio::main]
+async fn main() {
+    let uri = dotenvy::var("MONGO_DB_URI").unwrap();
+    let db = Data::new(
+        Client::with_uri_str(uri)
+            .await
+            .expect("Failed to connect to Mongodb"),
+    );
+
+    let user = auth_user(&db, "tanat").await.unwrap();
+
+    do_shit(&db, &user, &Asset::Crypto).await;
+    do_shit(&db, &user, &Asset::Stock).await;
 }
 
 #[cfg(test)]

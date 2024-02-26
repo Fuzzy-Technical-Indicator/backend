@@ -528,7 +528,7 @@ pub async fn buy_and_hold(
     start_time: i64,
     end_time: i64,
 ) -> (f64, Vec<(f64, i64)>) {
-    let ohlc_data = fetch_symbol(&db, symbol, &Some(interval.clone())).await;
+    let ohlc_data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
     let valid_ohlc = get_valid_data(ohlc_data.0, start_time, end_time);
 
     let first_ohlc = valid_ohlc.first().expect("This should not be None");
