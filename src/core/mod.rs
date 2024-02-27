@@ -17,8 +17,7 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tech_indicators::{
-    accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, naranjo_macd, obv, rsi, stoch,
-    DTValue, Ohlc,
+    accum_dist, adx, aroon, atr, bb, fuzzy::fuzzy_indicator, macd, obv, rsi, stoch, DTValue, Ohlc,
 };
 
 use self::{
@@ -26,7 +25,6 @@ use self::{
     users::User,
 };
 
-const DEBUG: bool = false;
 pub const DB_NAME: &str = "StockMarket";
 
 #[derive(Deserialize, Serialize, Debug, PartialEq, Clone, Hash, Eq)]
@@ -128,18 +126,9 @@ pub async fn fetch_symbol(
     symbol: &str,
     interval: &Option<Interval>,
 ) -> (Vec<Ohlc>, String) {
-    let now = Instant::now();
-
     let db_client = (*db).database(DB_NAME);
     let collection = db_client.collection::<Ohlc>(symbol);
     let result = aggr_fetch(&collection, interval).await;
-
-    if DEBUG {
-        println!(
-            "fetch_symbol, time elapsed: {}ms",
-            now.elapsed().as_millis()
-        );
-    }
 
     let label = format!("{}{:?}", symbol, interval);
     (result, label)
@@ -269,13 +258,10 @@ pub fn stoch_cached(
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{}{:?}", length, data.1, cachable_dt()) }"#
 )]
-pub fn naranjo_macd_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: &Option<Interval>,
-) -> Vec<DTValue<f64>> {
-    naranjo_macd(data)
+pub fn atr_cached(data: (Vec<Ohlc>, String), length: usize) -> Vec<DTValue<f64>> {
+    atr(&data.0, length)
 }
