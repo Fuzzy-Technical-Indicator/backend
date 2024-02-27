@@ -206,7 +206,7 @@ fn strength_term(l1: &[Option<f64>], l2: &[Option<f64>], mult: f64) -> Vec<Optio
             (Some(v0), Some(v1)) => {
                 let d = v1 - v0;
                 max_d = max_d.max(d);
-                return Some(mult * d / max_d);
+                Some(mult * d / max_d)
             }
             _ => None,
         })
@@ -377,6 +377,19 @@ pub fn stoch(
             _ => (f64::NAN, f64::NAN),
         })
         .collect::<Vec<(f64, f64)>>();
+
+    embed_datetime(&result, data)
+}
+
+pub fn atr(data: &[Ohlc], length: usize) -> Vec<DTValue<f64>> {
+    let atr = ta::rma(&ta::tr(data), length);
+    let result = atr
+        .par_iter()
+        .map(|x| match x {
+            Some(v) => *v,
+            None => f64::NAN,
+        })
+        .collect::<Vec<_>>();
 
     embed_datetime(&result, data)
 }

@@ -547,7 +547,12 @@ pub async fn linguistic_vars_optimization(
     );
     let test_f = objective_func(&test_result, &test_ref_run);
 
-    let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
+    let new_preset_name = format!(
+        "{}-{}-pso-{}",
+        setting.preset,
+        symbol,
+        Utc::now().timestamp()
+    );
     let run_at = Utc::now().timestamp_millis();
     let (_, backtest_id) = save_backtest_report(
         db,

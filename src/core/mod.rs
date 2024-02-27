@@ -17,7 +17,7 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tech_indicators::{
-    accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, naranjo_macd, obv, rsi, stoch,
+    accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, obv, rsi, stoch, atr,
     DTValue, Ohlc,
 };
 
@@ -259,13 +259,13 @@ pub fn stoch_cached(
 }
 
 #[cached(
+    time = 120,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", _symbol, _interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{}{:?}", length, data.1, cachable_dt()) }"#
 )]
-pub fn naranjo_macd_cached(
-    data: &[Ohlc],
-    _symbol: &str,
-    _interval: &Option<Interval>,
+pub fn atr_cached(
+    data: (Vec<Ohlc>, String),
+    length: usize
 ) -> Vec<DTValue<f64>> {
-    naranjo_macd(data)
+    atr(&data.0, length)
 }
