@@ -122,7 +122,7 @@ fn normalized_change(data: Vec<DTValue<f64>>, n: usize) -> Vec<Option<f64>> {
 }
 
 /// Need documentation
-fn transform_macd(macd: Vec<DTValue<(f64, f64, f64)>>) -> Vec<Option<f64>> {
+pub fn transform_macd(macd: Vec<DTValue<(f64, f64, f64)>>) -> Vec<Option<f64>> {
     let max_h = macd
         .par_iter()
         .zip(macd.par_iter().skip(1))

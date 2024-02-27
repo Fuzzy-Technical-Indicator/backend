@@ -14,15 +14,15 @@ use mongodb::{
     options::FindOptions,
     Client, Collection,
 };
-use rand::distributions::Distribution;
-use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
 
 use super::{
+    aroon_cached,
     error::{map_internal_err, CustomError},
     fetch_symbol,
-    fuzzy::get_fuzzy_config,
+    fuzzy::{get_fuzzy_config, transform_macd},
+    macd_cached,
     optimization::Strategy,
     users::User,
     DB_NAME,
@@ -204,8 +204,6 @@ pub struct BacktestJob {
     pub interval: Interval,
     pub preset: String,
 }
-
-// TODO classic one
 
 fn to_percent(x: f64, y: f64) -> f64 {
     (x / y) * 100.0
@@ -542,6 +540,90 @@ pub async fn buy_and_hold(
         result.push((pnl, ohlc.get_time()));
     }
     (result.last().expect("This should not be None").0, result)
+}
+
+/// special classical one for the experiment
+pub async fn classical(
+    db: &web::Data<Client>,
+    symbol: &str,
+    interval: &Interval,
+    initial_capital: f64,
+    start_time: i64,
+    end_time: i64,
+    take_profit: f64,
+    stop_loss: f64,
+    min_entry_size: f64,
+    entry_size_percent: f64,
+) -> Vec<Position> {
+    let ohlc_data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
+    let valid_aroon = get_valid_data(aroon_cached(ohlc_data.clone(), 14), start_time, end_time);
+    let valid_macd = transform_macd(get_valid_data(
+        macd_cached(ohlc_data.clone(), 12, 26, 9),
+        start_time,
+        end_time,
+    ));
+    let valid_ohlc = get_valid_data(ohlc_data.0, start_time, end_time);
+
+    let mut working_capital = initial_capital;
+    let mut positions: Vec<Position> = Vec::with_capacity(1000);
+    for (ohlc, (aroon, macd)) in valid_ohlc
+        .iter()
+        .zip(valid_aroon.iter().zip(valid_macd.iter()))
+    {
+        realize_positions(&mut positions, &mut working_capital, ohlc, false);
+
+        if working_capital <= 0.0 {
+            continue;
+        }
+
+        match macd {
+            Some(v) => {
+                let v = *v;
+                let (a_up, a_down) = aroon.value;
+
+                let entry_amount = (((entry_size_percent / 100.0) * working_capital)
+                    .max(min_entry_size))
+                .min(working_capital);
+
+                if ((v > 15.0 && v < 35.0) && a_up > 80.0)
+                    || ((!(15.0..=85.0).contains(&v) || v > 35.0 && v < 65.0) && a_up > 80.0)
+                {
+                    working_capital -= entry_amount;
+                    positions.push(Position::new(
+                        ohlc.close,
+                        ohlc.time.timestamp_millis(),
+                        entry_amount,
+                        take_profit,
+                        stop_loss,
+                        PosType::Long,
+                    ));
+                }
+                if ((v > 65.0 && v < 85.0) && a_down < 80.0)
+                    || ((!(15.0..=85.0).contains(&v) || v > 35.0 && v < 65.0) && a_down > 80.0)
+                {
+                    working_capital -= entry_amount;
+                    positions.push(Position::new(
+                        ohlc.close,
+                        ohlc.time.timestamp_millis(),
+                        entry_amount,
+                        take_profit,
+                        stop_loss,
+                        PosType::Short,
+                    ));
+                }
+            }
+            None => continue,
+        }
+    }
+
+    // realized the remaining positions
+    let last_ohlc = valid_ohlc
+        .last()
+        .expect("valid_ohlc should have at least 1 item");
+
+    realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
+
+    positions
 }
 
 pub async fn get_backtest_reports(

@@ -4,10 +4,7 @@ use backend::core::{
     DB_NAME,
 };
 use futures::TryStreamExt;
-use mongodb::{
-    bson::doc,
-    Client,
-};
+use mongodb::{bson::doc, Client};
 
 #[tokio::main]
 pub async fn main() {

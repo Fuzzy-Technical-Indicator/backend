@@ -17,8 +17,7 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tech_indicators::{
-    accum_dist, adx, aroon, bb, fuzzy::fuzzy_indicator, macd, obv, rsi, stoch, atr,
-    DTValue, Ohlc,
+    accum_dist, adx, aroon, atr, bb, fuzzy::fuzzy_indicator, macd, obv, rsi, stoch, DTValue, Ohlc,
 };
 
 use self::{
@@ -263,9 +262,6 @@ pub fn stoch_cached(
     key = "String",
     convert = r#"{ format!("{}{}{:?}", length, data.1, cachable_dt()) }"#
 )]
-pub fn atr_cached(
-    data: (Vec<Ohlc>, String),
-    length: usize
-) -> Vec<DTValue<f64>> {
+pub fn atr_cached(data: (Vec<Ohlc>, String), length: usize) -> Vec<DTValue<f64>> {
     atr(&data.0, length)
 }

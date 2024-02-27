@@ -11,9 +11,9 @@ use backend::core::{
 };
 use mongodb::Client;
 
-const CRYPTOS: [&str; 3] = ["ETH/USDT", "BTC/USDT", "BNB/USDT"];
+const CRYPTOS: &'static [&str] = &["ETH/USDT", "BTC/USDT", "BNB/USDT"];
 
-const STOCKS: [&str; 6] = [
+const STOCKS: &'static [&str] = &[
     "AAPL/USD", "IBM/USD", "JPM/USD", "MSFT/USD", "NKE/USD", "TSLA/USD",
 ];
 
@@ -117,6 +117,37 @@ async fn buy_and_hold(
     return (net_profits, g);
 }
 
+async fn classical(db: &Data<Client>, asset: &Asset) -> BTreeMap<i64, f64> {
+    let min_entry_size = 30.0;
+    let entry_size_percent = 5.0;
+    let (asset_list, c_len, (take_profit, stop_loss)) = match asset {
+        Asset::Crypto => (&CRYPTOS, CRYPTOS.len(), (20.0, 10.0)),
+        Asset::Stock => (&STOCKS, STOCKS.len(), (10.0, 5.0)),
+    };
+
+    let mut positions_list = vec![];
+
+    for symbol in *asset_list {
+        let positions = backtest::classical(
+            db,
+            symbol,
+            &INTERVAL,
+            CAPITAL / c_len as f64,
+            TEST_START,
+            TEST_END,
+            take_profit,
+            stop_loss,
+            min_entry_size,
+            entry_size_percent,
+        )
+        .await;
+        positions_list.push(positions);
+    }
+
+    let result = calc_cumlative_return(transform_positions(positions_list), CAPITAL, TEST_START);
+    result
+}
+
 async fn fuzzy(
     db: &Data<Client>,
     user: &User,
@@ -125,15 +156,9 @@ async fn fuzzy(
 ) -> (HashMap<String, f64>, BTreeMap<i64, f64>) {
     use FuzzyKind::*;
 
-    let preset = match kind {
-        Normal | WithCapitalManagement => "aaa",
-        PSO | PSOWithCapitalManagement => "aaa", // TODO
-    }
-    .to_string();
-
     let capital_management = match kind {
         Normal | PSO => CapitalManagement::Normal {
-            entry_size_percent: 10.0,
+            entry_size_percent: 5.0,
             min_entry_size: 30.0,
         },
         WithCapitalManagement | PSOWithCapitalManagement => CapitalManagement::LiquidF {
@@ -141,67 +166,71 @@ async fn fuzzy(
         },
     };
 
-    let choices_len = match asset {
-        Asset::Crypto => CRYPTOS.len(),
-        Asset::Stock => STOCKS.len(),
+    let (asset_list, c_len, (take_profit, stop_loss)) = match asset {
+        Asset::Crypto => (&CRYPTOS, CRYPTOS.len(), (20.0, 10.0)),
+        Asset::Stock => (&STOCKS, STOCKS.len(), (10.0, 5.0)),
     };
 
     let request = BacktestRequest {
-        capital: CAPITAL / choices_len as f64,
+        capital: CAPITAL / c_len as f64,
         start_time: TEST_START,
         end_time: TEST_END,
-        signal_conditions: vec![SignalCondition {
-            signal_index: 0,
-            signal_threshold: 30.0,
-            signal_do_command: PosType::Long,
-            take_profit_when: 20.0,
-            stop_loss_when: 10.0,
-            capital_management,
-        }],
+        signal_conditions: vec![
+            SignalCondition {
+                signal_index: 0,
+                signal_threshold: 30.0,
+                signal_do_command: PosType::Long,
+                take_profit_when: take_profit,
+                stop_loss_when: stop_loss,
+                capital_management: capital_management.clone(),
+            },
+            SignalCondition {
+                signal_index: 1,
+                signal_threshold: 30.0,
+                signal_do_command: PosType::Long,
+                take_profit_when: take_profit,
+                stop_loss_when: stop_loss,
+                capital_management,
+            },
+        ],
     };
 
     let mut positions_list = vec![];
     let mut net_profits = HashMap::new();
 
-    match asset {
-        Asset::Crypto => {
-            for symbol in CRYPTOS {
-                let (r, pos) = create_backtest_report(
-                    db.clone(),
-                    request.clone(),
-                    user,
-                    &symbol.to_string(),
-                    &INTERVAL,
-                    &preset,
-                )
-                .await
-                .unwrap();
+    let preset_map = HashMap::from([
+        ("ETH/USDT", "great 2-ETH/USDT-pso-1709048641"),
+        ("BTC/USDT", "great 2-BTC/USDT-pso-1709048054"),
+        ("BNB/USDT", "great 2-BNB/USDT-pso-1709049133"),
+        ("AAPL/USD", "great 2-AAPL/USD-pso-1709047732"),
+        ("IBM/USD", "great 2-IBM/USD-pso-1709047753"),
+        ("JPM/USD", "great 2-JPM/USD-pso-1709047774"),
+        ("MSFT/USD", "great 2-MSFT/USD-pso-1709047794"),
+        ("NKE/USD", "great 2-NKE/USD-pso-1709047812"),
+        ("TSLA/USD", "great 2-TSLA/USD-pso-1709047837"),
+    ]);
 
-                let result = r.get_backtest_result();
+    for symbol in *asset_list {
+        let preset = match kind {
+            Normal | WithCapitalManagement => "great 2".to_string(),
+            PSO | PSOWithCapitalManagement => preset_map.get(symbol).unwrap().to_string(),
+        };
 
-                net_profits.insert(symbol.to_string(), result.total.pnl);
-                positions_list.push(pos);
-            }
-        }
-        Asset::Stock => {
-            for symbol in STOCKS {
-                let (r, pos) = create_backtest_report(
-                    db.clone(),
-                    request.clone(),
-                    user,
-                    &symbol.to_string(),
-                    &INTERVAL,
-                    &preset,
-                )
-                .await
-                .unwrap();
+        let (r, pos) = create_backtest_report(
+            db.clone(),
+            request.clone(),
+            user,
+            &symbol.to_string(),
+            &INTERVAL,
+            &preset,
+        )
+        .await
+        .unwrap();
 
-                let result = r.get_backtest_result();
+        let result = r.get_backtest_result();
 
-                net_profits.insert(symbol.to_string(), result.total.pnl);
-                positions_list.push(pos);
-            }
-        }
+        net_profits.insert(symbol.to_string(), result.total.pnl);
+        positions_list.push(pos);
     }
 
     let result = calc_cumlative_return(transform_positions(positions_list), CAPITAL, TEST_START);
@@ -210,9 +239,13 @@ async fn fuzzy(
 }
 
 async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
+    let gc = classical(&db, asset).await;
+
     let (_, g1) = buy_and_hold(&db, asset).await;
     let (_, g2) = fuzzy(&db, &user, FuzzyKind::Normal, asset).await;
     let (_, g3) = fuzzy(&db, &user, FuzzyKind::WithCapitalManagement, asset).await;
+    let (_, g4) = fuzzy(&db, &user, FuzzyKind::PSO, asset).await;
+    let (_, g5) = fuzzy(&db, &user, FuzzyKind::PSOWithCapitalManagement, asset).await;
 
     let mut data = g1
         .iter()
@@ -220,9 +253,13 @@ async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
         .collect::<BTreeMap<_, _>>();
 
     for (k, _) in g1 {
-        let v1 = g2.get(&k).map(|x| *x);
-        let v2 = g3.get(&k).map(|x| *x);
-        data.entry(k).and_modify(|ls| ls.append(&mut vec![v1, v2]));
+        let v1 = gc.get(&k).map(|x| *x);
+        let v2 = g2.get(&k).map(|x| *x);
+        let v3 = g3.get(&k).map(|x| *x);
+        let v4 = g4.get(&k).map(|x| *x);
+        let v5 = g5.get(&k).map(|x| *x);
+        data.entry(k)
+            .and_modify(|ls| ls.append(&mut vec![v1, v2, v3, v4, v5]));
     }
 
     let mut writer = csv::Writer::from_path(match asset {
@@ -231,11 +268,21 @@ async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
     })
     .unwrap();
     writer
-        .write_record(&["time", "bh", "fuzzy", "fuzzy c"])
+        .write_record(&[
+            "time",
+            "B&H",
+            "Classical",
+            "Fuzzy",
+            "Fuzzy C",
+            "Fuzzy PSO",
+            "Fuzzy C PSO",
+        ])
         .unwrap();
 
     for (k, v) in data {
-        writer.serialize((k, v[0], v[1], v[2])).unwrap();
+        writer
+            .serialize((k, v[0], v[1], v[2], v[3], v[4], v[5]))
+            .unwrap();
     }
 
     writer.flush().unwrap();
