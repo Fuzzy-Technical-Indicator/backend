@@ -554,7 +554,7 @@ pub async fn classical(
     stop_loss: f64,
     min_entry_size: f64,
     entry_size_percent: f64,
-) -> Vec<Position> {
+) -> (f64, Vec<Position>) {
     let ohlc_data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
     let valid_aroon = get_valid_data(aroon_cached(ohlc_data.clone(), 14), start_time, end_time);
     let valid_macd = transform_macd(get_valid_data(
@@ -623,7 +623,9 @@ pub async fn classical(
 
     realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
 
-    positions
+    let r = generate_report(&positions, initial_capital, start_time);
+
+   (r.total.pnl, positions)
 }
 
 pub async fn get_backtest_reports(
