@@ -18,14 +18,7 @@ use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
 
 use super::{
-    aroon_cached,
-    error::{map_internal_err, CustomError},
-    fetch_symbol,
-    fuzzy::{get_fuzzy_config, transform_macd},
-    macd_cached,
-    optimization::Strategy,
-    users::User,
-    DB_NAME,
+    aroon_cached, error::{map_internal_err, CustomError}, fetch_symbol, fuzzy::get_fuzzy_config, optimization::Strategy, transformed_macd, users::User, DB_NAME
 };
 
 const COLLECTION_NAME: &str = "backtest-reports";
@@ -554,14 +547,11 @@ pub async fn classical(
     stop_loss: f64,
     min_entry_size: f64,
     entry_size_percent: f64,
-) -> Vec<Position> {
+) -> (f64, Vec<Position>) {
     let ohlc_data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
     let valid_aroon = get_valid_data(aroon_cached(ohlc_data.clone(), 14), start_time, end_time);
-    let valid_macd = transform_macd(get_valid_data(
-        macd_cached(ohlc_data.clone(), 12, 26, 9),
-        start_time,
-        end_time,
-    ));
+    
+    let valid_macd = get_valid_data(transformed_macd(ohlc_data.clone(), 12, 26, 9), start_time, end_time);
     let valid_ohlc = get_valid_data(ohlc_data.0, start_time, end_time);
 
     let mut working_capital = initial_capital;
@@ -576,9 +566,9 @@ pub async fn classical(
             continue;
         }
 
-        match macd {
-            Some(v) => {
-                let v = *v;
+        match macd.value.is_nan() {
+            true => {
+                let v = macd.value;
                 let (a_up, a_down) = aroon.value;
 
                 let entry_amount = (((entry_size_percent / 100.0) * working_capital)
@@ -612,7 +602,7 @@ pub async fn classical(
                     ));
                 }
             }
-            None => continue,
+            false => continue,
         }
     }
 
@@ -623,7 +613,9 @@ pub async fn classical(
 
     realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
 
-    positions
+    let r = generate_report(&positions, initial_capital, start_time);
+
+   (r.total.pnl, positions)
 }
 
 pub async fn get_backtest_reports(

@@ -14,6 +14,7 @@ use mongodb::{
     bson::{doc, Document},
     Client, Collection,
 };
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tech_indicators::{
@@ -205,6 +206,62 @@ pub fn macd_cached(
     smooth: usize,
 ) -> Vec<DTValue<(f64, f64, f64)>> {
     macd(&data.0, fast, slow, smooth)
+}
+
+#[cached(
+    time = 120,
+    key = "String",
+    convert = r#"{ format!("{}{}{}{}{:?}", fast, slow, smooth, data.1, cachable_dt()) }"#
+)]
+pub fn transformed_macd(
+    data: (Vec<Ohlc>, String),
+    fast: usize,
+    slow: usize,
+    smooth: usize,
+) -> Vec<DTValue<f64>> {
+    let macd_vec = macd(&data.0, fast, slow, smooth);
+    let max_h = macd_vec
+        .par_iter()
+        .zip(macd_vec.par_iter().skip(1))
+        .filter(|(v1, v2)| !v1.value.2.is_nan() && !v2.value.2.is_nan())
+        .map(|(v1, v2)| (v2.value.2 - v1.value.2).abs())
+        .max_by(f64::total_cmp)
+        .expect("This should not be empty");
+
+    rayon::iter::repeat(DTValue {
+        time: macd_vec.first().expect("This should not be None").time,
+        value: f64::NAN,
+    })
+    .take(1)
+    .chain(
+        macd_vec
+            .par_iter()
+            .zip(macd_vec.par_iter().skip(1))
+            .map(|(v1, v2)| {
+                let (_, _, h1) = v1.value;
+                let (_, _, h2) = v2.value;
+
+                if h1.is_nan() || h2.is_nan() {
+                    return DTValue {
+                        time: v2.time,
+                        value: f64::NAN,
+                    };
+                }
+                let q = if h2 > 0.0 && h1 <= 0.0 {
+                    75.0 // for long signal
+                } else if h2 < 0.0 && h1 >= 0.0 {
+                    25.0 // for short signal
+                } else {
+                    50.0 // for neutral signal
+                };
+
+                DTValue {
+                    time: v2.time,
+                    value: q + (25.0 * ((h2 - h1) / max_h)),
+                }
+            }),
+    )
+    .collect()
 }
 
 #[cached(

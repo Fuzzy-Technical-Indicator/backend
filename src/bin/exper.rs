@@ -1,10 +1,14 @@
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::File,
+    io::Write,
+};
 
 use actix_web::web::Data;
 use backend::core::{
     backtest::{
-        self, create_backtest_report, BacktestRequest, CapitalManagement, CumalativeReturn,
-        PosType, Position, SignalCondition,
+        self, create_backtest_report, BacktestRequest, CapitalManagement, PosType, Position,
+        SignalCondition,
     },
     users::{auth_user, User},
     Interval,
@@ -67,9 +71,9 @@ fn calc_cumlative_return(
 async fn buy_and_hold(
     db: &Data<Client>,
     asset: &Asset,
-) -> (HashMap<String, f64>, BTreeMap<i64, f64>) {
+) -> (BTreeMap<String, String>, BTreeMap<i64, f64>) {
     let mut pnls_list = vec![];
-    let mut net_profits = HashMap::new();
+    let mut net_profits = BTreeMap::new();
 
     match asset {
         Asset::Crypto => {
@@ -84,7 +88,7 @@ async fn buy_and_hold(
                 )
                 .await;
 
-                net_profits.insert(symbol.to_string(), net_profit);
+                net_profits.insert(symbol.to_string(), format!("{:.2}", net_profit));
                 pnls_list.push(pnls);
             }
         }
@@ -100,7 +104,7 @@ async fn buy_and_hold(
                 )
                 .await;
 
-                net_profits.insert(symbol.to_string(), net_profit);
+                net_profits.insert(symbol.to_string(), format!("{:.2}", net_profit));
                 pnls_list.push(pnls);
             }
         }
@@ -117,7 +121,7 @@ async fn buy_and_hold(
     return (net_profits, g);
 }
 
-async fn classical(db: &Data<Client>, asset: &Asset) -> BTreeMap<i64, f64> {
+async fn classical(db: &Data<Client>, asset: &Asset) -> (BTreeMap<String, String>, BTreeMap<i64, f64>) {
     let min_entry_size = 30.0;
     let entry_size_percent = 5.0;
     let (asset_list, c_len, (take_profit, stop_loss)) = match asset {
@@ -126,9 +130,10 @@ async fn classical(db: &Data<Client>, asset: &Asset) -> BTreeMap<i64, f64> {
     };
 
     let mut positions_list = vec![];
+    let mut net_profits = BTreeMap::new();
 
     for symbol in *asset_list {
-        let positions = backtest::classical(
+        let (net_profit, positions) = backtest::classical(
             db,
             symbol,
             &INTERVAL,
@@ -142,10 +147,11 @@ async fn classical(db: &Data<Client>, asset: &Asset) -> BTreeMap<i64, f64> {
         )
         .await;
         positions_list.push(positions);
+        net_profits.insert(symbol.to_string(), format!("{:.2}", net_profit));
     }
 
     let result = calc_cumlative_return(transform_positions(positions_list), CAPITAL, TEST_START);
-    result
+    (net_profits, result)
 }
 
 async fn fuzzy(
@@ -153,7 +159,7 @@ async fn fuzzy(
     user: &User,
     kind: FuzzyKind,
     asset: &Asset,
-) -> (HashMap<String, f64>, BTreeMap<i64, f64>) {
+) -> (BTreeMap<String, String>, BTreeMap<i64, f64>) {
     use FuzzyKind::*;
 
     let capital_management = match kind {
@@ -196,7 +202,7 @@ async fn fuzzy(
     };
 
     let mut positions_list = vec![];
-    let mut net_profits = HashMap::new();
+    let mut net_profits = BTreeMap::new();
 
     let preset_map = HashMap::from([
         ("ETH/USDT", "great 2-ETH/USDT-pso-1709048641"),
@@ -229,7 +235,7 @@ async fn fuzzy(
 
         let result = r.get_backtest_result();
 
-        net_profits.insert(symbol.to_string(), result.total.pnl);
+        net_profits.insert(symbol.to_string(), format!("{:.2}", result.total.pnl));
         positions_list.push(pos);
     }
 
@@ -239,13 +245,26 @@ async fn fuzzy(
 }
 
 async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
-    let gc = classical(&db, asset).await;
+    let (c_net, gc) = classical(&db, asset).await;
 
-    let (_, g1) = buy_and_hold(&db, asset).await;
-    let (_, g2) = fuzzy(&db, &user, FuzzyKind::Normal, asset).await;
-    let (_, g3) = fuzzy(&db, &user, FuzzyKind::WithCapitalManagement, asset).await;
-    let (_, g4) = fuzzy(&db, &user, FuzzyKind::PSO, asset).await;
-    let (_, g5) = fuzzy(&db, &user, FuzzyKind::PSOWithCapitalManagement, asset).await;
+    let (bh_net, g1) = buy_and_hold(&db, asset).await;
+    let (f1_net, g2) = fuzzy(&db, &user, FuzzyKind::Normal, asset).await;
+    let (f2_net, g3) = fuzzy(&db, &user, FuzzyKind::WithCapitalManagement, asset).await;
+    let (f3_net, g4) = fuzzy(&db, &user, FuzzyKind::PSO, asset).await;
+    let (f4_net, g5) = fuzzy(&db, &user, FuzzyKind::PSOWithCapitalManagement, asset).await;
+
+    let mut net_string = format!("classic: {:?} \n\n", c_net);
+    net_string.push_str(&format!("f: {:?} \n\n", f1_net));
+    net_string.push_str(&format!("f c: {:?} \n\n", f2_net));
+    net_string.push_str(&format!("f pso: {:?} \n\n", f3_net));
+    net_string.push_str(&format!("f c pso: {:?} \n\n", f4_net));
+    net_string.push_str(&format!("bh: {:?} \n\n", bh_net));
+
+    let mut file = match asset {
+        Asset::Crypto => File::create("net_profits.txt").unwrap(),
+        Asset::Stock => File::create("net_profits_stock.txt").unwrap(),
+    };
+    file.write_all(net_string.as_bytes()).unwrap();
 
     let mut data = g1
         .iter()
