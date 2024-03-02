@@ -8,13 +8,12 @@ use tech_indicators::{DTValue, Ohlc};
 
 use super::{
     accum_dist_cached, adx_cached, aroon_cached, bb_cached,
-    error::CustomError,
-    macd_cached, obv_cached, rsi_cached,
+    error::CustomError, obv_cached, rsi_cached,
     settings::{
         fetch_fuzzy_rules, fetch_setting, FuzzyRuleModel, LinguisticVarKind,
         LinguisticVarPresetModel,
     },
-    stoch_cached,
+    stoch_cached, transformed_macd,
     users::User,
 };
 use rayon::prelude::*;
@@ -121,42 +120,6 @@ fn normalized_change(data: Vec<DTValue<f64>>, n: usize) -> Vec<Option<f64>> {
         .collect::<Vec<_>>()
 }
 
-/// Need documentation
-pub fn transform_macd(macd: Vec<DTValue<(f64, f64, f64)>>) -> Vec<Option<f64>> {
-    let max_h = macd
-        .par_iter()
-        .zip(macd.par_iter().skip(1))
-        .filter(|(v1, v2)| !v1.value.2.is_nan() && !v2.value.2.is_nan())
-        .map(|(v1, v2)| (v2.value.2 - v1.value.2).abs())
-        .max_by(f64::total_cmp)
-        .unwrap();
-
-    rayon::iter::repeat(None)
-        .take(1)
-        .chain(
-            macd.par_iter()
-                .zip(macd.par_iter().skip(1))
-                .map(|(v1, v2)| {
-                    let (_, _, h1) = v1.value;
-                    let (_, _, h2) = v2.value;
-
-                    if h1.is_nan() || h2.is_nan() {
-                        return None;
-                    }
-
-                    let q = if h2 > 0.0 && h1 <= 0.0 {
-                        75.0 // for long signal
-                    } else if h2 < 0.0 && h1 >= 0.0 {
-                        25.0 // for short signal
-                    } else {
-                        50.0 // for neutral signal
-                    };
-                    Some(q + (25.0 * ((h2 - h1) / max_h)))
-                }),
-        )
-        .collect()
-}
-
 pub fn create_input(
     setting: &LinguisticVarPresetModel,
     data: &(Vec<Ohlc>, String),
@@ -171,10 +134,12 @@ pub fn create_input(
     for (name, var_info) in setting.vars.iter() {
         if let LinguisticVarKind::Input = var_info.kind {
             match name.as_str() {
+                // use the value directly, range [0, 100]
                 "rsi" => rsi_cached(data.clone(), user.rsi.length)
                     .iter()
                     .zip(dt.iter_mut())
                     .for_each(|(rsi_v, x)| x.1.push(Some(rsi_v.value))),
+                // percent difference from the middle band, range [-200, 200]
                 "bb" => bb_cached(data.clone(), user.bb.length, user.bb.stdev)
                     .iter()
                     .zip(dt.iter_mut())
@@ -182,37 +147,49 @@ pub fn create_input(
                     .for_each(|((bb_v, x), ohlc)| {
                         x.1.push(Some(bb_percent(ohlc.close, bb_v.value)))
                     }),
+                // use the value directly, range [0, 100]
                 "adx" => adx_cached(data.clone(), user.adx.length)
                     .iter()
                     .zip(dt.iter_mut())
                     .for_each(|(v, x)| x.1.push(Some(v.value))),
+                // use the value directly, range [0, inf]
                 "obv" => normalized_change(obv_cached(data.clone()), 14)
                     .iter()
                     .zip(dt.iter_mut())
                     .for_each(|(v, x)| x.1.push(*v)),
+                // use the value directly, range [0, inf]
                 "accumdist" => normalized_change(accum_dist_cached(data.clone()), 14)
                     .iter()
                     .zip(dt.iter_mut())
                     .for_each(|(v, x)| x.1.push(*v)),
-                "macd" => transform_macd(macd_cached(
+                // use macd that has been transformed to be one line that detect the cross-over
+                // range [0, 100]
+                "macd" => transformed_macd(
                     data.clone(),
                     user.macd.fast,
                     user.macd.slow,
                     user.macd.smooth,
-                ))
+                )
                 .iter()
+                .map(|v| match v.value.is_nan() {
+                    true => None,
+                    false => Some(v.value),
+                })
                 .zip(dt.iter_mut())
-                .for_each(|(v, x)| x.1.push(*v)),
+                .for_each(|(v, x)| x.1.push(v)),
+                // use the value directly, range [0, 100]
                 "stoch" => {
                     stoch_cached(data.clone(), user.stoch.k, user.stoch.d, user.stoch.length)
                         .iter()
                         .zip(dt.iter_mut())
                         .for_each(|(v, x)| x.1.push(Some(v.value.0)))
                 }
+                // use the value directly, range [0, 100]
                 "aroonup" => aroon_cached(data.clone(), user.aroon.length)
                     .iter()
                     .zip(dt.iter_mut())
                     .for_each(|(v, x)| x.1.push(Some(v.value.0))),
+                // use the value directly, range [0, 100]
                 "aroondown" => aroon_cached(data.clone(), user.aroon.length)
                     .iter()
                     .zip(dt.iter_mut())

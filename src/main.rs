@@ -28,6 +28,7 @@ use actix_web::{HttpMessage, HttpRequest, HttpResponse};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
 
+use backend::core::transformed_macd;
 use env_logger::Env;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,25 @@ async fn indicator_macd(
     let data = fetch_symbol(&db, symbol, interval).await;
 
     Ok(HttpResponse::Ok().json(macd_cached(
+        data,
+        user.macd.fast,
+        user.macd.slow,
+        user.macd.smooth,
+    )))
+}
+
+#[get("/macd/transformed")]
+async fn indicator_transformed_macd(
+    db: web::Data<Client>,
+    params: web::Query<QueryParams>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    let symbol = &params.symbol;
+    let interval = &params.interval;
+    let data = fetch_symbol(&db, symbol, interval).await;
+
+    Ok(HttpResponse::Ok().json(transformed_macd(
         data,
         user.macd.fast,
         user.macd.slow,
@@ -537,6 +557,7 @@ async fn main_server(
                 web::scope("/api/indicators")
                     .wrap(HttpAuthentication::bearer(auth_validator))
                     .service(indicator_macd)
+                    .service(indicator_transformed_macd)
                     .service(indicator_stoch)
                     .service(indicator_accum_dist)
                     .service(indicator_obv)
