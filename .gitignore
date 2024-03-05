@@ -2,3 +2,4 @@
 */target
 .env
 Rocket.toml
+.ipynb_checkpoints

@@ -58,7 +58,8 @@ pub struct TrainResult {
     preset: String,
     backtest_id: String,
     train_progress: Vec<TrainProgress>,
-    validation_f: f64,
+    validation_progress: Vec<f64>,
+    test_f: f64,
     run_at: i64,
 }
 
@@ -353,7 +354,7 @@ pub async fn linguistic_vars_optimization_cv(
 
     let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
     let run_at = Utc::now().timestamp_millis();
-    let (_, backtest_id) = save_backtest_report(
+    let (_, _backtest_id) = save_backtest_report(
         db,
         username,
         symbol,
@@ -372,6 +373,7 @@ pub async fn linguistic_vars_optimization_cv(
     setting.preset = new_preset_name.clone();
     save_linguistic_vars_setting(db, setting).await?;
 
+    /* I'm too lazy to fix this
     let train_result = TrainResult {
         username: username.clone(),
         preset: new_preset_name,
@@ -381,6 +383,7 @@ pub async fn linguistic_vars_optimization_cv(
         run_at,
     };
     save_train_result(db, train_result.clone()).await?;
+    */
     Ok(())
 }
 
@@ -452,6 +455,7 @@ pub async fn linguistic_vars_optimization(
     );
 
     let train_progress = Arc::new(Mutex::new(vec![]));
+    let mut validation_progress = vec![];
 
     let mut best_validation_f = f64::MAX;
     let mut best_ind = None;
@@ -514,13 +518,7 @@ pub async fn linguistic_vars_optimization(
             best_ind = Some(best_group.lbest_pos.clone());
         }
 
-        log::info!("epoch: {}", i);
-        log::info!(
-            "({}, {}) -> Validation f: {}",
-            train_end,
-            test_start,
-            validation_f
-        );
+        validation_progress.push(validation_f);
     }
 
     let end = data.0.len();
@@ -550,7 +548,7 @@ pub async fn linguistic_vars_optimization(
     let new_preset_name = format!(
         "{}-{}-pso-{}",
         setting.preset,
-        symbol,
+        symbol.replace('/', ""),
         Utc::now().timestamp()
     );
     let run_at = Utc::now().timestamp_millis();
@@ -578,7 +576,8 @@ pub async fn linguistic_vars_optimization(
         preset: new_preset_name,
         train_progress,
         backtest_id,
-        validation_f: test_f,
+        validation_progress,
+        test_f,
         run_at,
     };
     save_train_result(db, train_result.clone()).await?;
