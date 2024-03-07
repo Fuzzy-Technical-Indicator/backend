@@ -139,31 +139,6 @@ fn from_particle(
     copied
 }
 
-fn use_particle(
-    setting: &mut LinguisticVarPresetModel,
-    particle_pos: &[f64],
-    strat: &Strategy,
-    valid_ohlc: &[Ohlc],
-    fuzzy_rules: &[FuzzyRuleModel],
-    fuzzy_inputs: &[(i64, Vec<Option<f64>>)],
-    range: (usize, usize),
-) -> BacktestResult {
-    setting.vars = from_particle(&setting.vars, particle_pos);
-    let fuzzy_engine = create_fuzzy_engine(setting, fuzzy_rules);
-    let fuzzy_output = &fuzzy_indicator(&fuzzy_engine, fuzzy_inputs.to_vec())[range.0..range.1];
-    let positions = backtest(
-        valid_ohlc,
-        fuzzy_output,
-        &strat.signal_conditions,
-        strat.capital,
-    );
-    let start_time = valid_ohlc
-        .first()
-        .expect("valid_ohlc should not be empty")
-        .get_time();
-    generate_report(&positions, strat.capital, start_time)
-}
-
 async fn save_linguistic_vars_setting(
     db: &web::Data<Client>,
     data: LinguisticVarPresetModel,
@@ -231,166 +206,6 @@ fn objective_func(result: &BacktestResult, reference: &BacktestResult) -> f64 {
     -1.0 * (profit_change + mdd_change)
 }
 
-/// Cross Validation Version
-pub async fn linguistic_vars_optimization_cv(
-    db: &Data<Client>,
-    symbol: &String,
-    interval: &Interval,
-    preset: &String,
-    user: &User,
-    strat: Strategy,
-) -> Result<(), CustomError> {
-    if strat.signal_conditions.is_empty() {
-        return Err(CustomError::ExpectAtlestOneSignalCondition);
-    }
-    // data preparation
-    let username = &user.username;
-    let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
-    let setting = fetch_setting(db, username, preset).await?;
-    let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
-
-    let fuzzy_inputs = create_input(&setting, &data, user);
-
-    // k fold cross validation
-    let k = 5;
-    let offset = data.0.len() / k;
-
-    // pair of (start, end)
-    let folds = (0..k - 1)
-        .map(|i| (i * offset, (i + 1) * offset))
-        .chain([((k - 1) * offset, data.0.len())]);
-
-    let mut best_validation_f = f64::MAX;
-    let mut best_validation_res = None;
-    let mut best_train_progress = None;
-    let mut best_setting = None;
-
-    for (start, end) in folds {
-        let start_pos = to_particle(&setting.vars);
-        let mut groups = create_particle_groups(&start_pos, 1, 5);
-
-        let mut trained_setting = setting.clone();
-
-        // use 3/4 of the data for training
-        // train on training period only
-        let train_end = start + ((end - start) as f32 * 0.75).floor() as usize;
-        let ohlc = &data.0[start..train_end];
-        let first_run_train = use_particle(
-            &mut trained_setting,
-            &start_pos,
-            &strat,
-            ohlc,
-            &fuzzy_rules,
-            &fuzzy_inputs,
-            (start, train_end),
-        );
-
-        let mut train_progress: Vec<TrainProgress> = vec![];
-
-        for i in 0..strat.limit {
-            for (k, g) in groups.iter_mut().enumerate() {
-                for x in g.particles.iter_mut() {
-                    let r = use_particle(
-                        &mut trained_setting,
-                        &x.position,
-                        &strat,
-                        ohlc,
-                        &fuzzy_rules,
-                        &fuzzy_inputs,
-                        (start, train_end),
-                    );
-
-                    let f = objective_func(&r, &first_run_train);
-                    if f < x.f {
-                        x.f = f;
-                        x.best_pos = x.position.clone();
-                    }
-                    if f < g.lbest_f {
-                        g.lbest_f = f;
-                        g.lbest_pos = x.position.clone();
-                    }
-                    x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
-                    x.change_pos();
-
-                    train_progress.push(TrainProgress {
-                        epoch: i,
-                        group: k,
-                        f,
-                    });
-                }
-            }
-        }
-        let best_group = groups
-            .into_iter()
-            .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
-            .unwrap();
-
-        let valid_ohlc = &data.0[train_end..end];
-        let first_run_validation = use_particle(
-            &mut trained_setting,
-            &start_pos,
-            &strat,
-            valid_ohlc,
-            &fuzzy_rules,
-            &fuzzy_inputs,
-            (train_end, end),
-        );
-        let validation_result = use_particle(
-            &mut trained_setting,
-            &best_group.lbest_pos,
-            &strat,
-            valid_ohlc,
-            &fuzzy_rules,
-            &fuzzy_inputs,
-            (train_end, end),
-        );
-        let validation_f = objective_func(&validation_result, &first_run_validation);
-
-        log::info!("({}, {}) -> Validation f: {}", start, end, validation_f);
-
-        if validation_f < best_validation_f {
-            best_validation_f = validation_f;
-            best_validation_res = Some(validation_result);
-            best_train_progress = Some(train_progress);
-            best_setting = Some(trained_setting);
-        }
-    }
-
-    let new_preset_name = format!("{}-pso-{}", setting.preset, Utc::now().timestamp());
-    let run_at = Utc::now().timestamp_millis();
-    let (_, _backtest_id) = save_backtest_report(
-        db,
-        username,
-        symbol,
-        interval,
-        &new_preset_name,
-        BacktestResultWithRequest {
-            result: best_validation_res.expect("This should not be None"),
-            metadata: BacktestMetadata::PsoBackTest(strat.clone()),
-        },
-        run_at,
-    )
-    .await?;
-
-    let mut setting = best_setting.expect("This should not be None");
-    save_fuzzy_rules(db, fuzzy_rules, &new_preset_name).await?;
-    setting.preset = new_preset_name.clone();
-    save_linguistic_vars_setting(db, setting).await?;
-
-    /* I'm too lazy to fix this
-    let train_result = TrainResult {
-        username: username.clone(),
-        preset: new_preset_name,
-        train_progress: best_train_progress.expect("This should not be None"),
-        backtest_id,
-        validation_f: best_validation_f,
-        run_at,
-    };
-    save_train_result(db, train_result.clone()).await?;
-    */
-    Ok(())
-}
-
 pub struct PSOTrainResult {
     pub test_result: BacktestResult,
     pub test_f: f64,
@@ -408,18 +223,22 @@ pub struct PSORunner {
 }
 
 impl PSORunner {
-    fn use_particle(&self, particle_pos: &[f64], range: (usize, usize)) -> BacktestResult {
+    fn use_particle(
+        &self,
+        particle_pos: &[f64],
+        range: (usize, usize),
+        range2: Option<(usize, usize)>,
+    ) -> BacktestResult {
         let valid_ohlc = &self.ohlcs[range.0..range.1];
         let strat = &self.strat;
         let mut setting = self.setting.clone();
         setting.vars = from_particle(&setting.vars, particle_pos);
 
         let fuzzy_engine = create_fuzzy_engine(&setting, &self.fuzzy_rules);
-        let fuzzy_output =
-            &fuzzy_indicator(&fuzzy_engine, self.fuzzy_inputs.clone())[range.0..range.1];
+        let fuzzy_output = fuzzy_indicator(&fuzzy_engine, self.fuzzy_inputs.clone());
         let positions = backtest(
             valid_ohlc,
-            fuzzy_output,
+            &fuzzy_output[range.0..range.1],
             &strat.signal_conditions,
             strat.capital,
         );
@@ -428,7 +247,156 @@ impl PSORunner {
             .expect("valid_ohlc should not be empty")
             .get_time();
 
-        generate_report(&positions, strat.capital, start_time)
+        match range2 {
+            Some(range2) => {
+                let valid_ohlc = &self.ohlcs[range2.0..range2.1];
+                let snd_positions = backtest(
+                    valid_ohlc,
+                    &fuzzy_output[range2.0..range2.1],
+                    &strat.signal_conditions,
+                    strat.capital,
+                );
+                let positions = positions
+                    .into_iter()
+                    .chain(snd_positions)
+                    .collect::<Vec<_>>();
+                generate_report(&positions, strat.capital, start_time)
+            }
+            None => generate_report(&positions, strat.capital, start_time),
+        }
+    }
+
+    fn use_p_cv(
+        &self,
+        pos: &[f64],
+        i: usize,
+        last: usize,
+        valid_start: usize,
+        valid_end: usize,
+        test_start: usize,
+    ) -> BacktestResult {
+        if i == 0 {
+            return self.use_particle(pos, (valid_end, test_start), None);
+        }
+        if i == last {
+            return self.use_particle(pos, (0, valid_start), None);
+        }
+        self.use_particle(pos, (0, valid_start), Some((valid_end, test_start)))
+    }
+
+    pub fn cross_valid_train(&self, test_start: usize, interval: &Interval) -> PSOTrainResult {
+        let validation_period = self.strat.validation_period;
+        let validation_len = match interval {
+            // hour in a month
+            Interval::OneHour => validation_period * 30 * 24,
+            // 4-hours in a month
+            Interval::FourHour => validation_period * 30 * 6,
+            // day in a month
+            Interval::OneDay => validation_period * 30,
+        };
+
+        let k = test_start / validation_len;
+        // pair of (start, end)
+        let folds = (0..k - 1)
+            .map(|i| (i * validation_len, (i + 1) * validation_len))
+            .chain([((k - 1) * validation_len, test_start)])
+            .collect::<Vec<_>>();
+
+        let start_pos = to_particle(&self.setting.vars);
+
+        let train_results = folds
+            .par_iter()
+            .enumerate()
+            .map(|(curr_fold, item)| {
+                let (valid_start, valid_end) = item;
+                let mut groups = create_particle_groups(
+                    &start_pos,
+                    self.strat.particle_groups,
+                    self.strat.particle_amount,
+                );
+
+                let last = k - 1;
+                let ref_run =
+                    self.use_p_cv(&start_pos, curr_fold, last, *valid_start, *valid_end, test_start);
+
+                let valid_ref_run = self.use_particle(&start_pos, (*valid_start, *valid_end), None);
+
+                let mut validation_progress = vec![];
+
+                let mut best_validation_f = f64::MAX;
+                let mut best_ind = None;
+
+                for _ in 0..self.strat.limit {
+                    groups.par_iter_mut().enumerate().for_each(|(_, g)| {
+                        for x in g.particles.iter_mut() {
+                            let r = self.use_p_cv(
+                                &x.position,
+                                curr_fold,
+                                last,
+                                *valid_start,
+                                *valid_end,
+                                test_start,
+                            );
+
+                            let f = objective_func(&r, &ref_run);
+                            if f < x.f {
+                                x.f = f;
+                                x.best_pos = x.position.clone();
+                            }
+                            if f < g.lbest_f {
+                                g.lbest_f = f;
+                                g.lbest_pos = x.position.clone();
+                            }
+                            x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
+                            x.change_pos();
+                        }
+                    });
+
+                    let best_group = groups
+                        .iter()
+                        .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
+                        .unwrap();
+
+                    let validation_result =
+                        self.use_particle(&best_group.lbest_pos, (*valid_start, *valid_end), None);
+                    let validation_f = objective_func(&validation_result, &valid_ref_run);
+
+                    if validation_f < best_validation_f {
+                        best_validation_f = validation_f;
+                        best_ind = Some(best_group.lbest_pos.clone());
+                    }
+
+                    validation_progress.push(validation_f);
+                }
+                log::info!("fold {}/{}, {}", curr_fold, k - 1, best_validation_f);
+                (
+                    validation_progress,
+                    best_ind.expect("This should not be None"),
+                    best_validation_f,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let (validation_progress, best_ind_pos, _) = train_results
+            .into_iter()
+            .max_by(|(_, _, f1), (_, _, f2)| f1.total_cmp(f2))
+            .unwrap();
+
+        let end = self.ohlcs.len();
+        let test_ref_run = self.use_particle(&start_pos, (test_start, end), None);
+        let test_result = self.use_particle(&best_ind_pos, (test_start, end), None);
+        let test_f = objective_func(&test_result, &test_ref_run);
+
+        let mut best_setting = self.setting.clone();
+        best_setting.vars = from_particle(&best_setting.vars, &best_ind_pos);
+
+        PSOTrainResult {
+            test_result,
+            test_f,
+            best_setting,
+            train_progress: vec![],
+            validation_progress,
+        }
     }
 
     pub fn train(&self, train_end: usize, test_start: usize) -> PSOTrainResult {
@@ -439,8 +407,8 @@ impl PSORunner {
             self.strat.particle_amount,
         );
 
-        let ref_run = self.use_particle(&start_pos, (0, train_end));
-        let valid_ref_run = self.use_particle(&start_pos, (train_end, test_start));
+        let ref_run = self.use_particle(&start_pos, (0, train_end), None);
+        let valid_ref_run = self.use_particle(&start_pos, (train_end, test_start), None);
 
         let train_progress = Arc::new(Mutex::new(vec![]));
         let mut validation_progress = vec![];
@@ -451,7 +419,7 @@ impl PSORunner {
         for i in 0..self.strat.limit {
             groups.par_iter_mut().enumerate().for_each(|(k, g)| {
                 for x in g.particles.iter_mut() {
-                    let r = self.use_particle(&x.position, (0, train_end));
+                    let r = self.use_particle(&x.position, (0, train_end), None);
 
                     let f = objective_func(&r, &ref_run);
                     if f < x.f {
@@ -482,7 +450,7 @@ impl PSORunner {
                 .unwrap();
 
             let validation_result =
-                self.use_particle(&best_group.lbest_pos, (train_end, test_start));
+                self.use_particle(&best_group.lbest_pos, (train_end, test_start), None);
             let validation_f = objective_func(&validation_result, &valid_ref_run);
 
             if validation_f < best_validation_f {
@@ -495,8 +463,8 @@ impl PSORunner {
 
         let end = self.ohlcs.len();
         let best_ind_pos = best_ind.expect("This should not be None");
-        let test_ref_run = self.use_particle(&start_pos, (test_start, end));
-        let test_result = self.use_particle(&best_ind_pos, (test_start, end));
+        let test_ref_run = self.use_particle(&start_pos, (test_start, end), None);
+        let test_result = self.use_particle(&best_ind_pos, (test_start, end), None);
         let test_f = objective_func(&test_result, &test_ref_run);
 
         let mut best_setting = self.setting.clone();
@@ -552,7 +520,7 @@ pub async fn linguistic_vars_optimization(
         Interval::OneDay => test_start.saturating_sub(strat.validation_period * 30),
     };
 
-    log::info!("{}, {}", train_end, test_start);
+    log::info!("{}, {}, {}", train_end, test_start, data.0.len());
 
     let runner = PSORunner {
         ohlcs: data.0,
@@ -567,7 +535,7 @@ pub async fn linguistic_vars_optimization(
         train_progress,
         validation_progress,
         mut best_setting,
-    } = runner.train(train_end, test_start);
+    } = runner.cross_valid_train(test_start, interval);
 
     let time_used = now.elapsed().as_secs();
     log::info!("PSO time: {}", time_used);
