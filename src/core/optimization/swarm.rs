@@ -14,9 +14,25 @@ impl Individual {
         let mut rand = rand::thread_rng();
         let dist = Uniform::from(-1.0..=1.0);
         let speed: Vec<f64> = position.iter().map(|_i| dist.sample(&mut rand)).collect();
+
+        // generate pos based on the position max and min
+        let max = position
+            .iter()
+            .max_by(|a, b| a.total_cmp(b))
+            .expect("position should have atleast 1 element");
+        let min = position
+            .iter()
+            .min_by(|a, b| a.total_cmp(b))
+            .expect("position should have atleast 1 element");
+        let pos_dist = Uniform::from(*min..=*max);
+        let pos = position
+            .iter()
+            .map(|_| pos_dist.sample(&mut rand))
+            .collect::<Vec<_>>();
+
         Individual {
-            best_pos: position.clone(),
-            position,
+            best_pos: pos.clone(),
+            position: pos,
             f: f64::MAX,
             speed,
         }

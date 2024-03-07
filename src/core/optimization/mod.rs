@@ -1,6 +1,6 @@
 use std::{
     str::FromStr,
-    sync::{mpsc::Receiver, Arc, Mutex},
+    sync::{mpsc::Receiver, Arc, Mutex}, time::Instant,
 };
 
 use actix_web::web::{self, Data};
@@ -61,6 +61,7 @@ pub struct TrainResult {
     validation_progress: Vec<f64>,
     test_f: f64,
     run_at: i64,
+    time_used: u64,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -100,7 +101,7 @@ fn create_particle_groups(
         .map(|_| IndividualGroup {
             particles: particles[1..].into(),
             lbest_f: f64::MAX,
-            lbest_pos: particles[0].position.clone(),
+            lbest_pos: start_pos.to_vec(),
         })
         .collect()
 }
@@ -387,6 +388,8 @@ pub async fn linguistic_vars_optimization_cv(
     Ok(())
 }
 
+
+
 /// Normal Version
 pub async fn linguistic_vars_optimization(
     db: &Data<Client>,
@@ -399,6 +402,8 @@ pub async fn linguistic_vars_optimization(
     if strat.signal_conditions.is_empty() {
         return Err(CustomError::ExpectAtlestOneSignalCondition);
     }
+    let now = Instant::now();
+
     // data preparation
     let username = &user.username;
     let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
@@ -408,7 +413,7 @@ pub async fn linguistic_vars_optimization(
     let fuzzy_inputs = create_input(&setting, &data, user);
 
     let start_pos = to_particle(&setting.vars);
-    let mut groups = create_particle_groups(&start_pos, 3, 3);
+    let mut groups = create_particle_groups(&start_pos, 10, 10);
 
     let mut trained_setting = setting.clone();
 
@@ -545,6 +550,9 @@ pub async fn linguistic_vars_optimization(
     );
     let test_f = objective_func(&test_result, &test_ref_run);
 
+    let time_used = now.elapsed().as_secs();
+    log::info!("PSO time: {}", time_used);
+
     let new_preset_name = format!(
         "{}-{}-pso-{}",
         setting.preset,
@@ -579,6 +587,7 @@ pub async fn linguistic_vars_optimization(
         validation_progress,
         test_f,
         run_at,
+        time_used
     };
     save_train_result(db, train_result.clone()).await?;
     Ok(())
@@ -590,7 +599,7 @@ pub async fn get_train_results(
 ) -> Result<Vec<TrainResultWithId>, CustomError> {
     let coll = get_train_result_coll(db).await?;
     let find_options = FindOptions::builder().sort(doc! { "run_at": - 1}).build();
-    coll.find(doc! { "username": username}, find_options)
+    coll.find(doc! { "username": username }, find_options)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()

@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     str::FromStr,
     sync::{mpsc::Receiver, Mutex},
-    time::Instant,
 };
 
 use crate::core::Interval;
@@ -305,8 +304,6 @@ pub fn backtest(
     initial_capital: f64,
 ) -> Vec<Position> {
     use CapitalManagement::*;
-    let now = Instant::now();
-
     let mut working_capital = initial_capital;
     let mut positions: Vec<Position> = Vec::with_capacity(1000);
     for (ohlc, signal) in valid_ohlc.iter().zip(valid_fuzzy_output.iter()) {
@@ -356,7 +353,6 @@ pub fn backtest(
         .expect("valid_ohlc should have at least 1 item");
 
     realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
-    log::info!("backtest time: {}", now.elapsed().as_millis());
     positions
 }
 
