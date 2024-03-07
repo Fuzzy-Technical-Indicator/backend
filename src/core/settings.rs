@@ -16,6 +16,7 @@ use std::{collections::BTreeMap, str::FromStr};
 
 use super::{
     error::{map_internal_err, CustomError},
+    fuzzy::create_fuzzy_engine,
     DB_NAME,
 };
 
@@ -562,15 +563,21 @@ pub async fn delete_preset(
 pub async fn get_presets(
     db: &web::Data<Client>,
     username: String,
-) -> Result<Vec<String>, CustomError> {
+) -> Result<Vec<(String, bool)>, CustomError> {
     let linguistic_vars_coll = get_setting_coll(db).await?;
     let docs = linguistic_vars_coll
-        .find(doc! { "username": username }, None)
+        .find(doc! { "username": username.clone() }, None)
         .await
         .map_err(map_internal_err)?
         .try_collect::<Vec<_>>()
         .await
         .map_err(map_internal_err)?;
-    let result = docs.into_iter().map(|item| item.preset).collect::<Vec<_>>();
+    let result = futures::future::join_all(docs.into_iter().map(|item| async {
+        let preset = item.preset.clone();
+        let fuzzy_rules = fetch_fuzzy_rules(db, &username, &preset).await.unwrap();
+        let fuzzy_engine = create_fuzzy_engine(&item, &fuzzy_rules);
+
+        (item.preset, fuzzy_engine.is_valid())
+    })).await;
     Ok(result)
 }

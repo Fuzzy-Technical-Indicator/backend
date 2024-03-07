@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     str::FromStr,
     sync::{mpsc::Receiver, Mutex},
-    time::Instant,
 };
 
 use crate::core::Interval;
@@ -18,7 +17,14 @@ use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
 
 use super::{
-    aroon_cached, error::{map_internal_err, CustomError}, fetch_symbol, fuzzy::get_fuzzy_config, optimization::Strategy, transformed_macd, users::User, DB_NAME
+    aroon_cached,
+    error::{map_internal_err, CustomError},
+    fetch_symbol,
+    fuzzy::get_fuzzy_config,
+    optimization::Strategy,
+    transformed_macd,
+    users::User,
+    DB_NAME,
 };
 
 const COLLECTION_NAME: &str = "backtest-reports";
@@ -305,8 +311,6 @@ pub fn backtest(
     initial_capital: f64,
 ) -> Vec<Position> {
     use CapitalManagement::*;
-    let now = Instant::now();
-
     let mut working_capital = initial_capital;
     let mut positions: Vec<Position> = Vec::with_capacity(1000);
     for (ohlc, signal) in valid_ohlc.iter().zip(valid_fuzzy_output.iter()) {
@@ -356,7 +360,6 @@ pub fn backtest(
         .expect("valid_ohlc should have at least 1 item");
 
     realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
-    log::info!("backtest time: {}", now.elapsed().as_millis());
     positions
 }
 
@@ -550,8 +553,12 @@ pub async fn classical(
 ) -> (f64, Vec<Position>) {
     let ohlc_data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
     let valid_aroon = get_valid_data(aroon_cached(ohlc_data.clone(), 14), start_time, end_time);
-    
-    let valid_macd = get_valid_data(transformed_macd(ohlc_data.clone(), 12, 26, 9), start_time, end_time);
+
+    let valid_macd = get_valid_data(
+        transformed_macd(ohlc_data.clone(), 12, 26, 9),
+        start_time,
+        end_time,
+    );
     let valid_ohlc = get_valid_data(ohlc_data.0, start_time, end_time);
 
     let mut working_capital = initial_capital;
@@ -615,7 +622,7 @@ pub async fn classical(
 
     let r = generate_report(&positions, initial_capital, start_time);
 
-   (r.total.pnl, positions)
+    (r.total.pnl, positions)
 }
 
 pub async fn get_backtest_reports(
@@ -658,6 +665,18 @@ pub async fn delete_backtest_report(db: &web::Data<Client>, id: String) -> Resul
     if result.deleted_count == 0 {
         return Err(CustomError::BacktestReportNotFound);
     }
+    Ok(())
+}
+
+pub async fn delete_all_becktest_report(
+    db: &web::Data<Client>,
+    username: String,
+) -> Result<(), CustomError> {
+    let collection = get_backtest_coll::<BacktestReportWithId>(db);
+    collection
+        .delete_many(doc! { "username": username }, None)
+        .await
+        .map_err(map_internal_err)?;
     Ok(())
 }
 

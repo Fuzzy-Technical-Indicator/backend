@@ -7,6 +7,7 @@ edition = "2021"
 
 [workspace]
 members = ["tech_indicators", "fuzzy_logic"]
+exclude = ["db_updater"]
 
 [dependencies]
 fuzzy_logic = { path = "fuzzy_logic" }
