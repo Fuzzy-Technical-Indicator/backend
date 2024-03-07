@@ -490,6 +490,19 @@ async fn delete_backtest_report(
     Ok(HttpResponse::Ok().into())
 }
 
+#[delete("")]
+async fn delete_all_backtest_report(
+    db: web::Data<Client>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    backtest::delete_all_becktest_report(&db, user.username)
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().into())
+
+}
+
 fn is_user_exist(req: HttpRequest) -> Result<users::User, actix_web::Error> {
     if let Some(user) = req.extensions().get::<users::User>() {
         return Ok(user.clone());
@@ -593,6 +606,7 @@ async fn main_server(
                     .service(get_running_backtest)
                     .service(get_backtest_reports)
                     .service(get_backtest_report)
+                    .service(delete_all_backtest_report)
                     .service(delete_backtest_report),
             )
             .service(
