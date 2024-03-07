@@ -210,9 +210,14 @@ pub async fn get_fuzzy_config(
     let username = &user.username;
     let setting = fetch_setting(db, username, preset).await?;
     let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
+    let fuzzy_engine = create_fuzzy_engine(&setting, &fuzzy_rules);
+
+    if !fuzzy_engine.is_valid() {
+        return Err(CustomError::RequireAtleastOneValidRule);
+    }
 
     Ok((
-        create_fuzzy_engine(&setting, &fuzzy_rules),
+        fuzzy_engine,
         create_input(&setting, data, user),
     ))
 }

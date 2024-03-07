@@ -22,6 +22,9 @@ pub enum CustomError {
     #[error("The rule need to have atleast one input and one output")]
     RuleNotValid,
 
+    #[error("We need atleast one valid fuzzy rule")]
+    RequireAtleastOneValidRule,
+
     #[error("User {0} is not found")]
     UserNotFound(String),
 
@@ -56,9 +59,11 @@ pub fn map_custom_err(e: CustomError) -> actix_web::Error {
         | LinguisticVarShapeNotFound(_)
         | BacktestReportNotFound
         | TrainResultNotFound => ErrorNotFound(e.to_string()),
-        RuleAlreadyExist | RuleNotValid | InvalidTimeRange | ExpectAtlestOneSignalCondition => {
-            ErrorBadRequest(e.to_string())
-        }
+        RuleAlreadyExist
+        | RuleNotValid
+        | InvalidTimeRange
+        | ExpectAtlestOneSignalCondition
+        | RequireAtleastOneValidRule => ErrorBadRequest(e.to_string()),
         UserNotFound(_) => ErrorUnauthorized(e.to_string()),
         _ => ErrorInternalServerError(e.to_string()),
     }

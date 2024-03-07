@@ -14,7 +14,8 @@ type F = Arc<dyn Fn(f64) -> f64 + Send + Sync>;
 pub fn arange(start: f64, stop: f64, interval: f64) -> Vec<f64> {
     if stop < start {
         panic!("end can not be less than start");
-    } else if interval <= 0f64 {
+    } 
+    if interval <= 0f64 {
         panic!("interval must be > 0");
     }
     let r = 1.0 / interval;
@@ -86,6 +87,12 @@ impl FuzzyEngine {
                     None => true,
                     Some(t) => var.term(t).is_some(),
                 })
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.rules
+            .iter()
+            .any(|(cond, res)| cond.iter().any(|c| c.is_some()) && res.iter().any(|r| r.is_some()))
     }
 
     pub fn add_rule(self, cond: Vec<Option<&str>>, output: Vec<Option<&str>>) -> Self {
