@@ -430,7 +430,19 @@ impl PSORunner {
         })
     }
 
-    pub fn train(&self, train_end: usize, test_start: usize) -> PSOTrainResult {
+    pub fn train(&self, interval: &Interval) -> PSOTrainResult {
+        log::info!("start training");
+        let test_start = self.get_test_start_index();
+        let strat = &self.strat;
+        let train_end = match interval {
+            // hour in a month
+            Interval::OneHour => test_start.saturating_sub(strat.validation_period * 30 * 24),
+            // 4-hours in a month
+            Interval::FourHour => test_start.saturating_sub(strat.validation_period * 30 * 6),
+            // day in a month
+            Interval::OneDay => test_start.saturating_sub(strat.validation_period * 30),
+        };
+
         let start_pos = to_particle(&self.setting.vars);
         let mut groups = create_particle_groups(
             &start_pos,
@@ -520,6 +532,7 @@ pub async fn linguistic_vars_optimization(
     preset: &String,
     user: &User,
     strat: Strategy,
+    run_type: PSORunType,
 ) -> Result<(), CustomError> {
     if strat.signal_conditions.is_empty() {
         return Err(CustomError::ExpectAtlestOneSignalCondition);
@@ -540,19 +553,23 @@ pub async fn linguistic_vars_optimization(
         fuzzy_inputs,
         setting: setting.clone(),
     };
+
     let PSOTrainResult {
         test_result,
         test_f,
         train_progress,
         validation_progress,
         mut best_setting,
-    } = match runner.cross_valid_train(interval) {
-        Some(r) => r,
-        None => {
-            return Err(CustomError::InternalError(
-                "k-fold = 1, specify new validation period".to_string(),
-            ))
-        }
+    } = match run_type {
+        PSORunType::CrossValidation => match runner.cross_valid_train(interval) {
+            Some(r) => r,
+            None => {
+                return Err(CustomError::InternalError(
+                    "k-fold = 1, specify new validation period".to_string(),
+                ))
+            }
+        },
+        PSORunType::Normal => runner.train(interval),
     };
 
     // hard-coded capital management name by using first signal condition
@@ -635,6 +652,14 @@ pub async fn delete_train_result(db: &web::Data<Client>, id: String) -> Result<(
     Ok(())
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum PSORunType {
+    #[serde(rename = "normal")]
+    Normal,
+    #[serde(rename = "crossvalid")]
+    CrossValidation,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PSOTrainJob {
     pub symbol: String,
@@ -642,6 +667,7 @@ pub struct PSOTrainJob {
     pub preset: String,
     pub user: User,
     pub strat: Strategy,
+    pub run_type: PSORunType,
 }
 
 #[tokio::main]
@@ -663,9 +689,12 @@ pub async fn pso_consumer(
             preset,
             user,
             strat,
+            run_type,
         } = job;
 
-        let r = linguistic_vars_optimization(&db, &symbol, &interval, &preset, &user, strat).await;
+        let r =
+            linguistic_vars_optimization(&db, &symbol, &interval, &preset, &user, strat, run_type)
+                .await;
         match r {
             Ok(_) => {
                 log::info!("PSO job success")
