@@ -5,6 +5,7 @@ use mongodb::{
     Client, IndexModel,
 };
 use serde::{Deserialize, Serialize};
+use cached::proc_macro::cached;
 
 use super::{
     error::{map_internal_err, CustomError},
@@ -134,6 +135,11 @@ pub async fn register(db: &web::Data<Client>, username: String) -> Result<(), Cu
     Ok(())
 }
 
+#[cached(
+    result=true,
+    key = "String",
+    convert = r#"{ format!("{}", username) }"#
+)]
 pub async fn auth_user(db: &web::Data<Client>, username: &str) -> Result<User, CustomError> {
     let collection = get_user_coll(db).await?;
     let result = collection

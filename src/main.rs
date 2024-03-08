@@ -189,20 +189,6 @@ async fn indicator_stoch(
     )))
 }
 
-/*
-#[get("/indicator/naranjomacd")]
-async fn indicator_naranjo_macd(
-    db: web::Data<Client>,
-    params: web::Query<QueryParams>,
-) -> impl Responder {
-    let symbol = &params.symbol;
-    let interval = &params.interval;
-
-    let data = fetch_symbol(db, symbol, interval).await;
-    web::Json(naranjo_macd_cached(&data, symbol, interval))
-}
-*/
-
 #[get("")]
 async fn fuzzy_route(
     db: web::Data<Client>,
@@ -409,10 +395,16 @@ struct IntervalParam {
     interval: Interval,
 }
 
+#[derive(Deserialize)]
+struct PSORunTypeParam {
+    runtype: optimization::PSORunType,
+}
+
 #[post("/run/{preset}/cryptos")]
 async fn run_pso_cryptos(
     path: web::Path<String>,
     params: web::Query<IntervalParam>,
+    run_type: web::Query<PSORunTypeParam>,
     strat: web::Json<optimization::Strategy>,
     req: HttpRequest,
     pso_sender: web::Data<Sender<optimization::PSOTrainJob>>,
@@ -423,8 +415,9 @@ async fn run_pso_cryptos(
     let interval = params.interval.clone();
     let preset = path.into_inner();
     let strat = strat.into_inner();
+    let run_type = run_type.into_inner().runtype;
 
-    const CRYPTOS: &'static [&str] = &["ETH/USDT", "BTC/USDT", "BNB/USDT"];
+    const CRYPTOS: &[&str] = &["ETH/USDT", "BTC/USDT", "BNB/USDT"];
 
     for symbol in CRYPTOS {
         let job = optimization::PSOTrainJob {
@@ -433,6 +426,7 @@ async fn run_pso_cryptos(
             preset: preset.clone(),
             user: user.clone(),
             strat: strat.clone(),
+            run_type: run_type.clone()
         };
         pso_sender
             .send(job)
@@ -449,6 +443,7 @@ async fn run_pso_cryptos(
 async fn run_pso_stocks(
     path: web::Path<String>,
     params: web::Query<IntervalParam>,
+    run_type: web::Query<PSORunTypeParam>,
     strat: web::Json<optimization::Strategy>,
     req: HttpRequest,
     pso_sender: web::Data<Sender<optimization::PSOTrainJob>>,
@@ -459,8 +454,9 @@ async fn run_pso_stocks(
     let interval = params.interval.clone();
     let preset = path.into_inner();
     let strat = strat.into_inner();
+    let run_type = run_type.into_inner().runtype;
 
-    const STOCKS: &'static [&str] = &[
+    const STOCKS: &[&str] = &[
         "AAPL/USD", "IBM/USD", "JPM/USD", "MSFT/USD", "NKE/USD", "TSLA/USD",
     ];
 
@@ -471,6 +467,7 @@ async fn run_pso_stocks(
             preset: preset.clone(),
             user: user.clone(),
             strat: strat.clone(),
+            run_type: run_type.clone()
         };
         pso_sender
             .send(job)
@@ -487,6 +484,7 @@ async fn run_pso_stocks(
 async fn run_pso(
     path: web::Path<String>,
     params: web::Query<QueryParams>,
+    run_type: web::Query<PSORunTypeParam>,
     strat: web::Json<optimization::Strategy>,
     req: HttpRequest,
     pso_sender: web::Data<Sender<optimization::PSOTrainJob>>,
@@ -503,6 +501,7 @@ async fn run_pso(
         preset,
         user,
         strat: strat.into_inner(),
+        run_type: run_type.into_inner().runtype
     };
 
     pso_sender
@@ -578,6 +577,12 @@ async fn delete_all_backtest_report(
     backtest::delete_all_becktest_report(&db, user.username)
         .await
         .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().into())
+}
+
+#[get("")]
+async fn check_user(req: HttpRequest) -> ActixResult<HttpResponse> {
+    let _ = is_user_exist(req)?;
     Ok(HttpResponse::Ok().into())
 }
 
@@ -697,6 +702,11 @@ async fn main_server(
                     .service(running_pso)
                     .service(delete_pso_result)
                     .service(get_pso_result),
+            )
+            .service(
+                web::scope("/api/user")
+                    .wrap(HttpAuthentication::bearer(auth_validator))
+                    .service(check_user),
             )
             .service(web::scope("/api").service(ohlc).service(register))
     })

@@ -1,6 +1,6 @@
 use std::{
     str::FromStr,
-    sync::{mpsc::Receiver, Arc, Mutex},
+    sync::{mpsc::Receiver, Mutex},
     time::Instant,
 };
 
@@ -15,6 +15,8 @@ use mongodb::{
 };
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, Ohlc};
+
+use crate::core::backtest::CapitalManagement;
 
 use self::swarm::{gen_rho, Individual, IndividualGroup};
 
@@ -44,6 +46,7 @@ pub struct Strategy {
     signal_conditions: Vec<SignalCondition>,
     validation_period: usize, // in mounth
     test_start: i64,
+    test_end: i64,
     particle_groups: usize,
     particle_amount: usize,
 }
@@ -232,6 +235,15 @@ impl PSORunner {
             .unwrap_or_default() // this could be weird when unwrapping
     }
 
+    fn get_test_end_index(&self) -> usize {
+        self.ohlcs
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, item)| (item.get_time() - self.strat.test_end).abs())
+            .map(|(i, _)| i)
+            .unwrap_or_default() // this could be weird when unwrapping
+    }
+
     fn use_particle(
         &self,
         particle_pos: &[f64],
@@ -411,9 +423,9 @@ impl PSORunner {
             .max_by(|(_, _, f1), (_, _, f2)| f1.total_cmp(f2))
             .unwrap();
 
-        let end = self.ohlcs.len();
-        let test_ref_run = self.use_particle(&start_pos, (test_start, end), None);
-        let test_result = self.use_particle(&best_ind_pos, (test_start, end), None);
+        let test_end = self.get_test_end_index();
+        let test_ref_run = self.use_particle(&start_pos, (test_start, test_end), None);
+        let test_result = self.use_particle(&best_ind_pos, (test_start, test_end), None);
         let test_f = objective_func(&test_result, &test_ref_run);
 
         let mut best_setting = self.setting.clone();
@@ -428,7 +440,20 @@ impl PSORunner {
         })
     }
 
-    pub fn train(&self, train_end: usize, test_start: usize) -> PSOTrainResult {
+    pub fn train(&self, interval: &Interval) -> PSOTrainResult {
+        log::info!("start training");
+        let test_start = self.get_test_start_index();
+        let test_end = self.get_test_end_index();
+        let strat = &self.strat;
+        let train_end = match interval {
+            // hour in a month
+            Interval::OneHour => test_start.saturating_sub(strat.validation_period * 30 * 24),
+            // 4-hours in a month
+            Interval::FourHour => test_start.saturating_sub(strat.validation_period * 30 * 6),
+            // day in a month
+            Interval::OneDay => test_start.saturating_sub(strat.validation_period * 30),
+        };
+
         let start_pos = to_particle(&self.setting.vars);
         let mut groups = create_particle_groups(
             &start_pos,
@@ -439,14 +464,13 @@ impl PSORunner {
         let ref_run = self.use_particle(&start_pos, (0, train_end), None);
         let valid_ref_run = self.use_particle(&start_pos, (train_end, test_start), None);
 
-        let train_progress = Arc::new(Mutex::new(vec![]));
         let mut validation_progress = vec![];
 
         let mut best_validation_f = f64::MAX;
         let mut best_ind = None;
 
-        for i in 0..self.strat.limit {
-            groups.par_iter_mut().enumerate().for_each(|(k, g)| {
+        for _ in 0..self.strat.limit {
+            groups.par_iter_mut().enumerate().for_each(|(_, g)| {
                 for x in g.particles.iter_mut() {
                     let r = self.use_particle(&x.position, (0, train_end), None);
 
@@ -461,15 +485,6 @@ impl PSORunner {
                     }
                     x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
                     x.change_pos();
-
-                    {
-                        let mut tp = train_progress.lock().unwrap();
-                        (*tp).push(TrainProgress {
-                            epoch: i,
-                            group: k,
-                            f,
-                        });
-                    }
                 }
             });
 
@@ -490,21 +505,19 @@ impl PSORunner {
             validation_progress.push(validation_f);
         }
 
-        let end = self.ohlcs.len();
         let best_ind_pos = best_ind.expect("This should not be None");
-        let test_ref_run = self.use_particle(&start_pos, (test_start, end), None);
-        let test_result = self.use_particle(&best_ind_pos, (test_start, end), None);
+        let test_ref_run = self.use_particle(&start_pos, (test_start, test_end), None);
+        let test_result = self.use_particle(&best_ind_pos, (test_start, test_end), None);
         let test_f = objective_func(&test_result, &test_ref_run);
 
         let mut best_setting = self.setting.clone();
         best_setting.vars = from_particle(&best_setting.vars, &best_ind_pos);
-        let train_progress = train_progress.lock().unwrap().to_vec();
 
         PSOTrainResult {
             test_result,
             test_f,
             best_setting,
-            train_progress,
+            train_progress: vec![],
             validation_progress: vec![validation_progress],
         }
     }
@@ -518,12 +531,13 @@ pub async fn linguistic_vars_optimization(
     preset: &String,
     user: &User,
     strat: Strategy,
+    run_type: PSORunType,
 ) -> Result<(), CustomError> {
     if strat.signal_conditions.is_empty() {
         return Err(CustomError::ExpectAtlestOneSignalCondition);
     }
-    let now = Instant::now();
 
+    let now = Instant::now();
     // data preparation
     let username = &user.username;
     let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
@@ -538,28 +552,39 @@ pub async fn linguistic_vars_optimization(
         fuzzy_inputs,
         setting: setting.clone(),
     };
+
     let PSOTrainResult {
         test_result,
         test_f,
         train_progress,
         validation_progress,
         mut best_setting,
-    } = match runner.cross_valid_train(interval) {
-        Some(r) => r,
-        None => {
-            return Err(CustomError::InternalError(
-                "k-fold = 1, specify new validation period".to_string(),
-            ))
-        }
+    } = match run_type {
+        PSORunType::CrossValidation => match runner.cross_valid_train(interval) {
+            Some(r) => r,
+            None => {
+                return Err(CustomError::InternalError(
+                    "k-fold = 1, specify new validation period".to_string(),
+                ))
+            }
+        },
+        PSORunType::Normal => runner.train(interval),
     };
 
-    let time_used = now.elapsed().as_secs();
-    log::info!("PSO time: {}", time_used);
+    // hard-coded capital management name by using first signal condition
+    let cap_type = match strat.signal_conditions.first() {
+        Some(st) => match st.capital_management {
+            CapitalManagement::Normal { .. } => "normal".to_string(),
+            CapitalManagement::LiquidF { .. } => "liquidf".to_string(),
+        },
+        None => "normal".to_string(),
+    };
 
     let new_preset_name = format!(
-        "{}-{}-pso-{}",
+        "{}-{}-{}-pso-{}",
         setting.preset,
         symbol.replace('/', ""),
+        cap_type,
         Utc::now().timestamp()
     );
     let run_at = Utc::now().timestamp_millis();
@@ -581,6 +606,8 @@ pub async fn linguistic_vars_optimization(
     best_setting.preset = new_preset_name.clone();
     save_linguistic_vars_setting(db, best_setting).await?;
 
+    let time_used = now.elapsed().as_secs();
+    log::info!("PSO time: {}", time_used);
     let train_result = TrainResult {
         username: username.clone(),
         preset: new_preset_name,
@@ -624,6 +651,14 @@ pub async fn delete_train_result(db: &web::Data<Client>, id: String) -> Result<(
     Ok(())
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum PSORunType {
+    #[serde(rename = "normal")]
+    Normal,
+    #[serde(rename = "crossvalid")]
+    CrossValidation,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PSOTrainJob {
     pub symbol: String,
@@ -631,6 +666,7 @@ pub struct PSOTrainJob {
     pub preset: String,
     pub user: User,
     pub strat: Strategy,
+    pub run_type: PSORunType,
 }
 
 #[tokio::main]
@@ -652,9 +688,12 @@ pub async fn pso_consumer(
             preset,
             user,
             strat,
+            run_type,
         } = job;
 
-        let r = linguistic_vars_optimization(&db, &symbol, &interval, &preset, &user, strat).await;
+        let r =
+            linguistic_vars_optimization(&db, &symbol, &interval, &preset, &user, strat, run_type)
+                .await;
         match r {
             Ok(_) => {
                 log::info!("PSO job success")
