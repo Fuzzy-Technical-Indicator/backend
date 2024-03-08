@@ -48,7 +48,8 @@ pub async fn main() {
     .unwrap();
     */
 
-    coll.update_many(doc!{ }, doc! { 
+    /*
+    coll.update_many(doc!{ }, doc! {
         "$set": {
             "backtest_result.metadata.signal_conditions.$[].capital_management": {
                 "type": "Normal",
@@ -60,4 +61,17 @@ pub async fn main() {
             "backtest_result.metadata.signal_conditions.$[].entry_size_percent": "",
             "backtest_result.metadata.signal_conditions.$[].min_entry_size": ""
         }}, None).await.unwrap();
+    */
+
+    coll.update_many(
+        doc! { "username": "r" },
+        doc! {
+        "$set": {
+            "backtest_result.metadata.test_end": 1709914780000i64
+        },
+        },
+        None,
+    )
+    .await
+    .unwrap();
 }

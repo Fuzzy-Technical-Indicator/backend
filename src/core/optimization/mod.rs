@@ -1,6 +1,6 @@
 use std::{
     str::FromStr,
-    sync::{mpsc::Receiver, Arc, Mutex},
+    sync::{mpsc::Receiver, Mutex},
     time::Instant,
 };
 
@@ -46,6 +46,7 @@ pub struct Strategy {
     signal_conditions: Vec<SignalCondition>,
     validation_period: usize, // in mounth
     test_start: i64,
+    test_end: i64,
     particle_groups: usize,
     particle_amount: usize,
 }
@@ -234,6 +235,15 @@ impl PSORunner {
             .unwrap_or_default() // this could be weird when unwrapping
     }
 
+    fn get_test_end_index(&self) -> usize {
+        self.ohlcs
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, item)| (item.get_time() - self.strat.test_end).abs())
+            .map(|(i, _)| i)
+            .unwrap_or_default() // this could be weird when unwrapping
+    }
+
     fn use_particle(
         &self,
         particle_pos: &[f64],
@@ -413,9 +423,9 @@ impl PSORunner {
             .max_by(|(_, _, f1), (_, _, f2)| f1.total_cmp(f2))
             .unwrap();
 
-        let end = self.ohlcs.len();
-        let test_ref_run = self.use_particle(&start_pos, (test_start, end), None);
-        let test_result = self.use_particle(&best_ind_pos, (test_start, end), None);
+        let test_end = self.get_test_end_index();
+        let test_ref_run = self.use_particle(&start_pos, (test_start, test_end), None);
+        let test_result = self.use_particle(&best_ind_pos, (test_start, test_end), None);
         let test_f = objective_func(&test_result, &test_ref_run);
 
         let mut best_setting = self.setting.clone();
@@ -433,6 +443,7 @@ impl PSORunner {
     pub fn train(&self, interval: &Interval) -> PSOTrainResult {
         log::info!("start training");
         let test_start = self.get_test_start_index();
+        let test_end = self.get_test_end_index();
         let strat = &self.strat;
         let train_end = match interval {
             // hour in a month
@@ -453,14 +464,13 @@ impl PSORunner {
         let ref_run = self.use_particle(&start_pos, (0, train_end), None);
         let valid_ref_run = self.use_particle(&start_pos, (train_end, test_start), None);
 
-        let train_progress = Arc::new(Mutex::new(vec![]));
         let mut validation_progress = vec![];
 
         let mut best_validation_f = f64::MAX;
         let mut best_ind = None;
 
-        for i in 0..self.strat.limit {
-            groups.par_iter_mut().enumerate().for_each(|(k, g)| {
+        for _ in 0..self.strat.limit {
+            groups.par_iter_mut().enumerate().for_each(|(_, g)| {
                 for x in g.particles.iter_mut() {
                     let r = self.use_particle(&x.position, (0, train_end), None);
 
@@ -475,15 +485,6 @@ impl PSORunner {
                     }
                     x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
                     x.change_pos();
-
-                    {
-                        let mut tp = train_progress.lock().unwrap();
-                        (*tp).push(TrainProgress {
-                            epoch: i,
-                            group: k,
-                            f,
-                        });
-                    }
                 }
             });
 
@@ -504,21 +505,19 @@ impl PSORunner {
             validation_progress.push(validation_f);
         }
 
-        let end = self.ohlcs.len();
         let best_ind_pos = best_ind.expect("This should not be None");
-        let test_ref_run = self.use_particle(&start_pos, (test_start, end), None);
-        let test_result = self.use_particle(&best_ind_pos, (test_start, end), None);
+        let test_ref_run = self.use_particle(&start_pos, (test_start, test_end), None);
+        let test_result = self.use_particle(&best_ind_pos, (test_start, test_end), None);
         let test_f = objective_func(&test_result, &test_ref_run);
 
         let mut best_setting = self.setting.clone();
         best_setting.vars = from_particle(&best_setting.vars, &best_ind_pos);
-        let train_progress = train_progress.lock().unwrap().to_vec();
 
         PSOTrainResult {
             test_result,
             test_f,
             best_setting,
-            train_progress,
+            train_progress: vec![],
             validation_progress: vec![validation_progress],
         }
     }
