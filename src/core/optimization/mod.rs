@@ -16,6 +16,8 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, Ohlc};
 
+use crate::core::backtest::CapitalManagement;
+
 use self::swarm::{gen_rho, Individual, IndividualGroup};
 
 use super::{
@@ -522,8 +524,8 @@ pub async fn linguistic_vars_optimization(
     if strat.signal_conditions.is_empty() {
         return Err(CustomError::ExpectAtlestOneSignalCondition);
     }
-    let now = Instant::now();
 
+    let now = Instant::now();
     // data preparation
     let username = &user.username;
     let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
@@ -553,13 +555,20 @@ pub async fn linguistic_vars_optimization(
         }
     };
 
-    let time_used = now.elapsed().as_secs();
-    log::info!("PSO time: {}", time_used);
+    // hard-coded capital management name by using first signal condition
+    let cap_type = match strat.signal_conditions.first() {
+        Some(st) => match st.capital_management {
+            CapitalManagement::Normal { .. } => "normal".to_string(),
+            CapitalManagement::LiquidF { .. } => "liquidf".to_string(),
+        },
+        None => "normal".to_string(),
+    };
 
     let new_preset_name = format!(
-        "{}-{}-pso-{}",
+        "{}-{}-{}-pso-{}",
         setting.preset,
         symbol.replace('/', ""),
+        cap_type,
         Utc::now().timestamp()
     );
     let run_at = Utc::now().timestamp_millis();
@@ -581,6 +590,8 @@ pub async fn linguistic_vars_optimization(
     best_setting.preset = new_preset_name.clone();
     save_linguistic_vars_setting(db, best_setting).await?;
 
+    let time_used = now.elapsed().as_secs();
+    log::info!("PSO time: {}", time_used);
     let train_result = TrainResult {
         username: username.clone(),
         preset: new_preset_name,

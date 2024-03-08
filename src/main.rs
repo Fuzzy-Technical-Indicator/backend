@@ -424,7 +424,7 @@ async fn run_pso_cryptos(
     let preset = path.into_inner();
     let strat = strat.into_inner();
 
-    const CRYPTOS: &'static [&str] = &["ETH/USDT", "BTC/USDT", "BNB/USDT"];
+    const CRYPTOS: &[&str] = &["ETH/USDT", "BTC/USDT", "BNB/USDT"];
 
     for symbol in CRYPTOS {
         let job = optimization::PSOTrainJob {
@@ -460,7 +460,7 @@ async fn run_pso_stocks(
     let preset = path.into_inner();
     let strat = strat.into_inner();
 
-    const STOCKS: &'static [&str] = &[
+    const STOCKS: &[&str] = &[
         "AAPL/USD", "IBM/USD", "JPM/USD", "MSFT/USD", "NKE/USD", "TSLA/USD",
     ];
 

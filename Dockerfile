@@ -29,4 +29,6 @@ WORKDIR /app
 
 EXPOSE 8000
 
+ENV RAYON_NUM_THREADS=4
+
 CMD ["./backend"]
