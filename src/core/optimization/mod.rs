@@ -61,7 +61,7 @@ pub struct TrainResult {
     preset: String,
     backtest_id: String,
     train_progress: Vec<TrainProgress>,
-    validation_progress: Vec<f64>,
+    validation_progress: Vec<Vec<f64>>,
     test_f: f64,
     run_at: i64,
     time_used: u64,
@@ -211,7 +211,7 @@ pub struct PSOTrainResult {
     pub test_f: f64,
     pub best_setting: LinguisticVarPresetModel,
     pub train_progress: Vec<TrainProgress>,
-    pub validation_progress: Vec<f64>,
+    pub validation_progress: Vec<Vec<f64>>,
 }
 
 pub struct PSORunner {
@@ -223,6 +223,15 @@ pub struct PSORunner {
 }
 
 impl PSORunner {
+    fn get_test_start_index(&self) -> usize {
+        self.ohlcs
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, item)| (item.get_time() - self.strat.test_start).abs())
+            .map(|(i, _)| i)
+            .unwrap_or_default() // this could be weird when unwrapping
+    }
+
     fn use_particle(
         &self,
         particle_pos: &[f64],
@@ -269,22 +278,23 @@ impl PSORunner {
     fn use_p_cv(
         &self,
         pos: &[f64],
-        i: usize,
-        last: usize,
+        curr_fold: usize,
+        last_fold: usize,
         valid_start: usize,
         valid_end: usize,
         test_start: usize,
     ) -> BacktestResult {
-        if i == 0 {
+        if curr_fold == 0 {
             return self.use_particle(pos, (valid_end, test_start), None);
         }
-        if i == last {
+        if curr_fold == last_fold {
             return self.use_particle(pos, (0, valid_start), None);
         }
         self.use_particle(pos, (0, valid_start), Some((valid_end, test_start)))
     }
 
-    pub fn cross_valid_train(&self, test_start: usize, interval: &Interval) -> PSOTrainResult {
+    pub fn cross_valid_train(&self, interval: &Interval) -> Option<PSOTrainResult> {
+        let test_start = self.get_test_start_index();
         let validation_period = self.strat.validation_period;
         let validation_len = match interval {
             // hour in a month
@@ -296,6 +306,10 @@ impl PSORunner {
         };
 
         let k = test_start / validation_len;
+        log::info!("k: {}", k);
+        if k <= 1 {
+            return None;
+        }
         // pair of (start, end)
         let folds = (0..k - 1)
             .map(|i| (i * validation_len, (i + 1) * validation_len))
@@ -308,6 +322,7 @@ impl PSORunner {
             .par_iter()
             .enumerate()
             .map(|(curr_fold, item)| {
+                log::info!("fold {}/{}, start training", curr_fold, k - 1);
                 let (valid_start, valid_end) = item;
                 let mut groups = create_particle_groups(
                     &start_pos,
@@ -316,8 +331,14 @@ impl PSORunner {
                 );
 
                 let last = k - 1;
-                let ref_run =
-                    self.use_p_cv(&start_pos, curr_fold, last, *valid_start, *valid_end, test_start);
+                let ref_run = self.use_p_cv(
+                    &start_pos,
+                    curr_fold,
+                    last,
+                    *valid_start,
+                    *valid_end,
+                    test_start,
+                );
 
                 let valid_ref_run = self.use_particle(&start_pos, (*valid_start, *valid_end), None);
 
@@ -377,7 +398,15 @@ impl PSORunner {
             })
             .collect::<Vec<_>>();
 
-        let (validation_progress, best_ind_pos, _) = train_results
+        let all_valid_progress = train_results
+            .iter()
+            .fold(&mut vec![], |acc, (vp, _, _)| {
+                acc.push(vp.clone());
+                acc
+            })
+            .to_vec();
+
+        let (_, best_ind_pos, _) = train_results
             .into_iter()
             .max_by(|(_, _, f1), (_, _, f2)| f1.total_cmp(f2))
             .unwrap();
@@ -390,13 +419,13 @@ impl PSORunner {
         let mut best_setting = self.setting.clone();
         best_setting.vars = from_particle(&best_setting.vars, &best_ind_pos);
 
-        PSOTrainResult {
+        Some(PSOTrainResult {
             test_result,
             test_f,
             best_setting,
             train_progress: vec![],
-            validation_progress,
-        }
+            validation_progress: all_valid_progress,
+        })
     }
 
     pub fn train(&self, train_end: usize, test_start: usize) -> PSOTrainResult {
@@ -476,7 +505,7 @@ impl PSORunner {
             test_f,
             best_setting,
             train_progress,
-            validation_progress,
+            validation_progress: vec![validation_progress],
         }
     }
 }
@@ -502,26 +531,6 @@ pub async fn linguistic_vars_optimization(
     let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
     let fuzzy_inputs = create_input(&setting, &data, user);
 
-    let test_start = data
-        .0
-        .iter()
-        .map(|item| (item.get_time() - strat.test_start).abs())
-        .enumerate()
-        .min_by(|(_, a), (_, b)| a.cmp(b))
-        .map(|(i, _)| i)
-        .unwrap();
-
-    let train_end = match interval {
-        // hour in a month
-        Interval::OneHour => test_start.saturating_sub(strat.validation_period * 30 * 24),
-        // 4-hours in a month
-        Interval::FourHour => test_start.saturating_sub(strat.validation_period * 30 * 6),
-        // day in a month
-        Interval::OneDay => test_start.saturating_sub(strat.validation_period * 30),
-    };
-
-    log::info!("{}, {}, {}", train_end, test_start, data.0.len());
-
     let runner = PSORunner {
         ohlcs: data.0,
         strat: strat.clone(),
@@ -535,7 +544,14 @@ pub async fn linguistic_vars_optimization(
         train_progress,
         validation_progress,
         mut best_setting,
-    } = runner.cross_valid_train(test_start, interval);
+    } = match runner.cross_valid_train(interval) {
+        Some(r) => r,
+        None => {
+            return Err(CustomError::InternalError(
+                "k-fold = 1, specify new validation period".to_string(),
+            ))
+        }
+    };
 
     let time_used = now.elapsed().as_secs();
     log::info!("PSO time: {}", time_used);

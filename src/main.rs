@@ -404,10 +404,89 @@ async fn running_pso(pso_counter: web::Data<Mutex<u32>>) -> ActixResult<HttpResp
     Ok(HttpResponse::Ok().json(result))
 }
 
-#[post("/run")]
+#[derive(Deserialize)]
+struct IntervalParam {
+    interval: Interval,
+}
+
+#[post("/run/{preset}/cryptos")]
+async fn run_pso_cryptos(
+    path: web::Path<String>,
+    params: web::Query<IntervalParam>,
+    strat: web::Json<optimization::Strategy>,
+    req: HttpRequest,
+    pso_sender: web::Data<Sender<optimization::PSOTrainJob>>,
+    pso_counter: web::Data<Mutex<u32>>,
+) -> ActixResult<HttpResponse> {
+    // convenient route
+    let user = is_user_exist(req)?;
+    let interval = params.interval.clone();
+    let preset = path.into_inner();
+    let strat = strat.into_inner();
+
+    const CRYPTOS: &'static [&str] = &["ETH/USDT", "BTC/USDT", "BNB/USDT"];
+
+    for symbol in CRYPTOS {
+        let job = optimization::PSOTrainJob {
+            symbol: symbol.to_string(),
+            interval: interval.clone(),
+            preset: preset.clone(),
+            user: user.clone(),
+            strat: strat.clone(),
+        };
+        pso_sender
+            .send(job)
+            .map_err(|e| ErrorInternalServerError(e.to_string()))?;
+        {
+            *pso_counter.lock().unwrap() += 1;
+        }
+    }
+
+    Ok(HttpResponse::Ok().into())
+}
+
+#[post("/run/{preset}/stocks")]
+async fn run_pso_stocks(
+    path: web::Path<String>,
+    params: web::Query<IntervalParam>,
+    strat: web::Json<optimization::Strategy>,
+    req: HttpRequest,
+    pso_sender: web::Data<Sender<optimization::PSOTrainJob>>,
+    pso_counter: web::Data<Mutex<u32>>,
+) -> ActixResult<HttpResponse> {
+    // convenient route
+    let user = is_user_exist(req)?;
+    let interval = params.interval.clone();
+    let preset = path.into_inner();
+    let strat = strat.into_inner();
+
+    const STOCKS: &'static [&str] = &[
+        "AAPL/USD", "IBM/USD", "JPM/USD", "MSFT/USD", "NKE/USD", "TSLA/USD",
+    ];
+
+    for symbol in STOCKS {
+        let job = optimization::PSOTrainJob {
+            symbol: symbol.to_string(),
+            interval: interval.clone(),
+            preset: preset.clone(),
+            user: user.clone(),
+            strat: strat.clone(),
+        };
+        pso_sender
+            .send(job)
+            .map_err(|e| ErrorInternalServerError(e.to_string()))?;
+        {
+            *pso_counter.lock().unwrap() += 1;
+        }
+    }
+
+    Ok(HttpResponse::Ok().into())
+}
+
+#[post("/run/{preset}")]
 async fn run_pso(
+    path: web::Path<String>,
     params: web::Query<QueryParams>,
-    preset_query: web::Query<PresetQueryParam>,
     strat: web::Json<optimization::Strategy>,
     req: HttpRequest,
     pso_sender: web::Data<Sender<optimization::PSOTrainJob>>,
@@ -416,7 +495,7 @@ async fn run_pso(
     let user = is_user_exist(req)?;
     let symbol = params.symbol.clone();
     let interval = params.interval.clone().unwrap_or(Interval::OneDay);
-    let preset = preset_query.preset.clone();
+    let preset = path.into_inner();
 
     let job = optimization::PSOTrainJob {
         symbol,
@@ -500,7 +579,6 @@ async fn delete_all_backtest_report(
         .await
         .map_err(map_custom_err)?;
     Ok(HttpResponse::Ok().into())
-
 }
 
 fn is_user_exist(req: HttpRequest) -> Result<users::User, actix_web::Error> {
@@ -613,6 +691,8 @@ async fn main_server(
                 web::scope("/api/pso")
                     .app_data(pso_counter.clone())
                     .wrap(HttpAuthentication::bearer(auth_validator))
+                    .service(run_pso_cryptos)
+                    .service(run_pso_stocks)
                     .service(run_pso)
                     .service(running_pso)
                     .service(delete_pso_result)
