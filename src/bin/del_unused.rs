@@ -1,5 +1,6 @@
 use actix_web::web;
 use backend::core::{
+    backtest,
     settings::{delete_preset, LinguisticVarPresetModel},
     DB_NAME,
 };
@@ -18,7 +19,7 @@ pub async fn main() {
 
     let temp = coll
         .find(
-            doc! { "username": "tanat", "preset": { "$regex": "aaa-pso" } },
+            doc! { "username": "r", "preset": { "$regex": "rsi-bb-.*-pso" } },
             None,
         )
         .await
@@ -29,6 +30,13 @@ pub async fn main() {
 
     let client = web::Data::new(db);
     for p in temp.into_iter().map(|x| x.preset) {
-        let _ = delete_preset(&client, p, "tanat".to_string()).await;
+        let _ = delete_preset(&client, p, "r".to_string()).await;
     }
+
+    let backtest_coll = db_client.collection::<backtest::BacktestReportWithId>("backtest-reports");
+
+    let _ = backtest_coll.delete_many(
+        doc! { "username": "r", "fuzzy_preset": {"$regex": "rsi-bb-.*-pso"}},
+        None,
+    ).await;
 }

@@ -22,7 +22,7 @@ const STOCKS: &'static [&str] = &[
 ];
 
 const TEST_START: i64 = 1696093200000;
-const TEST_END: i64 = 1708771859000;
+const TEST_END: i64 = 1709830800000;
 const CAPITAL: f64 = 3000.0;
 const INTERVAL: Interval = Interval::OneHour;
 
@@ -133,7 +133,8 @@ async fn classical(db: &Data<Client>, asset: &Asset) -> (BTreeMap<String, String
     let mut net_profits = BTreeMap::new();
 
     for symbol in *asset_list {
-        let (net_profit, positions) = backtest::classical(
+        /*
+        let (net_profit, positions) = backtest::classical_aroon_macd(
             db,
             symbol,
             &INTERVAL,
@@ -146,6 +147,21 @@ async fn classical(db: &Data<Client>, asset: &Asset) -> (BTreeMap<String, String
             entry_size_percent,
         )
         .await;
+        */
+        let (net_profit, positions) = backtest::classical_rsi_bb(
+            db,
+            symbol,
+            &INTERVAL,
+            CAPITAL / c_len as f64,
+            TEST_START,
+            TEST_END,
+            take_profit,
+            stop_loss,
+            min_entry_size,
+            entry_size_percent,
+        )
+        .await;
+        
         positions_list.push(positions);
         net_profits.insert(symbol.to_string(), format!("{:.2}", net_profit));
     }
@@ -184,7 +200,7 @@ async fn fuzzy(
         signal_conditions: vec![
             SignalCondition {
                 signal_index: 0,
-                signal_threshold: 30.0,
+                signal_threshold: 25.0, // 25 for rsi-bb, 30 for aroon-macd
                 signal_do_command: PosType::Long,
                 take_profit_when: take_profit,
                 stop_loss_when: stop_loss,
@@ -192,7 +208,7 @@ async fn fuzzy(
             },
             SignalCondition {
                 signal_index: 1,
-                signal_threshold: 30.0,
+                signal_threshold: 25.0,
                 signal_do_command: PosType::Long,
                 take_profit_when: take_profit,
                 stop_loss_when: stop_loss,
@@ -204,22 +220,61 @@ async fn fuzzy(
     let mut positions_list = vec![];
     let mut net_profits = BTreeMap::new();
 
+    /* aroon-macd
     let preset_map = HashMap::from([
-        ("ETH/USDT", "great 2-ETH/USDT-pso-1709048641"),
-        ("BTC/USDT", "great 2-BTC/USDT-pso-1709048054"),
-        ("BNB/USDT", "great 2-BNB/USDT-pso-1709049133"),
-        ("AAPL/USD", "great 2-AAPL/USD-pso-1709047732"),
-        ("IBM/USD", "great 2-IBM/USD-pso-1709047753"),
-        ("JPM/USD", "great 2-JPM/USD-pso-1709047774"),
-        ("MSFT/USD", "great 2-MSFT/USD-pso-1709047794"),
-        ("NKE/USD", "great 2-NKE/USD-pso-1709047812"),
-        ("TSLA/USD", "great 2-TSLA/USD-pso-1709047837"),
+        ("ETH/USDT", "aroon-macd-ETHUSDT-normal-pso-1709932909"),
+        ("BTC/USDT", "aroon-macd-BTCUSDT-normal-pso-1709936638"),
+        ("BNB/USDT", "aroon-macd-BNBUSDT-normal-pso-1709940328"),
+        ("AAPL/USD", "aroon-macd-AAPLUSD-normal-pso-1709925496"),
+        ("IBM/USD", "aroon-macd-IBMUSD-normal-pso-1709926175"),
+        ("JPM/USD", "aroon-macd-JPMUSD-normal-pso-1709926934"),
+        ("MSFT/USD", "aroon-macd-MSFTUSD-normal-pso-1709927730"),
+        ("NKE/USD", "aroon-macd-NKEUSD-normal-pso-1709928434"),
+        ("TSLA/USD", "aroon-macd-TSLAUSD-normal-pso-1709929245"),
+    ]);
+
+    let with_cap_preset_map = HashMap::from([
+        ("ETH/USDT", "aroon-macd-ETHUSDT-liquidf-pso-1709944469"),
+        ("BTC/USDT", "aroon-macd-BTCUSDT-liquidf-pso-1709948657"),
+        ("BNB/USDT", "aroon-macd-BNBUSDT-liquidf-pso-1709953710"),
+        ("AAPL/USD", "aroon-macd-AAPLUSD-liquidf-pso-1709921104"),
+        ("IBM/USD", "aroon-macd-IBMUSD-liquidf-pso-1709921696"),
+        ("JPM/USD", "aroon-macd-JPMUSD-liquidf-pso-1709922361"),
+        ("MSFT/USD", "aroon-macd-MSFTUSD-liquidf-pso-1709923146"),
+        ("NKE/USD", "aroon-macd-NKEUSD-liquidf-pso-1709923837"),
+        ("TSLA/USD", "aroon-macd-TSLAUSD-liquidf-pso-1709924662"),
+    ]);
+    */
+
+    let preset_map = HashMap::from([
+        ("ETH/USDT", "rsi-bb-ETHUSDT-normal-pso-1710150749"),
+        ("BTC/USDT", "rsi-bb-BTCUSDT-normal-pso-1710151839"),
+        ("BNB/USDT", "rsi-bb-BNBUSDT-normal-pso-1710152811"),
+        ("AAPL/USD", "rsi-bb-AAPLUSD-normal-pso-1710146634"),
+        ("IBM/USD", "rsi-bb-IBMUSD-normal-pso-1710147298"),
+        ("JPM/USD", "rsi-bb-JPMUSD-normal-pso-1710148041"),
+        ("MSFT/USD", "rsi-bb-MSFTUSD-normal-pso-1710148842"),
+        ("NKE/USD", "rsi-bb-NKEUSD-normal-pso-1710149563"),
+        ("TSLA/USD", "rsi-bb-TSLAUSD-normal-pso-1710150382"),
+    ]);
+
+    let with_cap_preset_map = HashMap::from([
+        ("ETH/USDT", "rsi-bb-ETHUSDT-liquidf-pso-1710147110"),
+        ("BTC/USDT", "rsi-bb-BTCUSDT-liquidf-pso-1710148643"),
+        ("BNB/USDT", "rsi-bb-BNBUSDT-liquidf-pso-1710149667"),
+        ("AAPL/USD", "rsi-bb-AAPLUSD-liquidf-pso-1710151213"),
+        ("IBM/USD", "rsi-bb-IBMUSD-liquidf-pso-1710151919"),
+        ("JPM/USD", "rsi-bb-JPMUSD-liquidf-pso-1710152676"),
+        ("MSFT/USD", "rsi-bb-MSFTUSD-liquidf-pso-1710153486"),
+        ("NKE/USD", "rsi-bb-NKEUSD-liquidf-pso-1710154210"),
+        ("TSLA/USD", "rsi-bb-TSLAUSD-liquidf-pso-1710155031"),
     ]);
 
     for symbol in *asset_list {
         let preset = match kind {
-            Normal | WithCapitalManagement => "great 2".to_string(),
-            PSO | PSOWithCapitalManagement => preset_map.get(symbol).unwrap().to_string(),
+            Normal | WithCapitalManagement => "aroon-macd".to_string(),
+            PSO => preset_map.get(symbol).unwrap().to_string(),
+            PSOWithCapitalManagement => with_cap_preset_map.get(symbol).unwrap().to_string(),
         };
 
         let (r, pos) = create_backtest_report(
@@ -261,8 +316,8 @@ async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
     net_string.push_str(&format!("bh: {:?} \n\n", bh_net));
 
     let mut file = match asset {
-        Asset::Crypto => File::create("net_profits.txt").unwrap(),
-        Asset::Stock => File::create("net_profits_stock.txt").unwrap(),
+        Asset::Crypto => File::create("experiment_graph/net_profits2.txt").unwrap(),
+        Asset::Stock => File::create("experiment_graph/net_profits_stock2.txt").unwrap(),
     };
     file.write_all(net_string.as_bytes()).unwrap();
 
@@ -282,8 +337,8 @@ async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
     }
 
     let mut writer = csv::Writer::from_path(match asset {
-        Asset::Crypto => "experiment_graph/data.csv",
-        Asset::Stock => "experiment_graph/data_stock.csv",
+        Asset::Crypto => "experiment_graph/data2.csv",
+        Asset::Stock => "experiment_graph/data_stock2.csv",
     })
     .unwrap();
     writer
@@ -316,15 +371,8 @@ async fn main() {
             .expect("Failed to connect to Mongodb"),
     );
 
-    let user = auth_user(&db, "tanat").await.unwrap();
+    let user = auth_user(&db, "r").await.unwrap();
 
     do_shit(&db, &user, &Asset::Crypto).await;
     do_shit(&db, &user, &Asset::Stock).await;
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn test_something() {}
 }
