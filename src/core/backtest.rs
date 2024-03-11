@@ -654,13 +654,11 @@ pub async fn classical_rsi_bb(
                 let rsi_v = rsi.value;
                 let bb_percent = bb_percent(ohlc.close, bb.value);
 
-                println!("{}", bb_percent);
-
                 let entry_amount = (((entry_size_percent / 100.0) * working_capital)
                     .max(min_entry_size))
                 .min(working_capital);
                 
-                if rsi_v < 30.0 && (bb_percent < -90.0 || (bb_percent >= -90.0 && bb_percent < 0.0)) {
+                if rsi_v < 30.0 && bb_percent < -80.0  {
                     working_capital -= entry_amount;
                     positions.push(Position::new(
                         ohlc.close,
@@ -672,7 +670,7 @@ pub async fn classical_rsi_bb(
                     ));
                 }
 
-                if rsi_v > 70.0 && (bb_percent > 90.0 || (bb_percent <= 90.0 && bb_percent > 0.0)) {
+                if rsi_v > 70.0 && bb_percent > 80.0  {
                     working_capital -= entry_amount;
                     positions.push(Position::new(
                         ohlc.close,
