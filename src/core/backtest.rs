@@ -17,14 +17,7 @@ use serde::{Deserialize, Serialize};
 use tech_indicators::{fuzzy::fuzzy_indicator, DTValue, Ohlc};
 
 use super::{
-    aroon_cached,
-    error::{map_internal_err, CustomError},
-    fetch_symbol,
-    fuzzy::get_fuzzy_config,
-    optimization::Strategy,
-    transformed_macd,
-    users::User,
-    DB_NAME,
+    aroon_cached, bb_cached, error::{map_internal_err, CustomError}, fetch_symbol, fuzzy::{bb_percent, get_fuzzy_config}, optimization::Strategy, rsi_cached, transformed_macd, users::User, DB_NAME
 };
 
 const COLLECTION_NAME: &str = "backtest-reports";
@@ -539,7 +532,7 @@ pub async fn buy_and_hold(
 }
 
 /// special classical one for the experiment
-pub async fn classical(
+pub async fn classical_aroon_macd(
     db: &web::Data<Client>,
     symbol: &str,
     interval: &Interval,
@@ -573,7 +566,7 @@ pub async fn classical(
             continue;
         }
 
-        match macd.value.is_nan() {
+        match !macd.value.is_nan() {
             true => {
                 let v = macd.value;
                 let (a_up, a_down) = aroon.value;
@@ -582,9 +575,7 @@ pub async fn classical(
                     .max(min_entry_size))
                 .min(working_capital);
 
-                if ((v > 15.0 && v < 35.0) && a_up > 80.0)
-                    || ((!(15.0..=85.0).contains(&v) || v > 35.0 && v < 65.0) && a_up > 80.0)
-                {
+                if ((v > 65.0 && v < 85.0) || (v > 35.0 || v < 65.0)) && a_up > 80.0 {
                     working_capital -= entry_amount;
                     positions.push(Position::new(
                         ohlc.close,
@@ -595,9 +586,91 @@ pub async fn classical(
                         PosType::Long,
                     ));
                 }
-                if ((v > 65.0 && v < 85.0) && a_down < 80.0)
-                    || ((!(15.0..=85.0).contains(&v) || v > 35.0 && v < 65.0) && a_down > 80.0)
-                {
+                if ((v > 15.0 && v < 35.0) || (v > 35.0 || v < 65.0)) && a_down > 80.0 {
+                    working_capital -= entry_amount;
+                    positions.push(Position::new(
+                        ohlc.close,
+                        ohlc.time.timestamp_millis(),
+                        entry_amount,
+                        take_profit,
+                        stop_loss,
+                        PosType::Short,
+                    ));
+                }
+            }
+            false => continue,
+        }
+    }
+
+    // realized the remaining positions
+    let last_ohlc = valid_ohlc
+        .last()
+        .expect("valid_ohlc should have at least 1 item");
+
+    realize_positions(&mut positions, &mut working_capital, last_ohlc, true);
+
+    let r = generate_report(&positions, initial_capital, start_time);
+
+    (r.total.pnl, positions)
+}
+
+/// special classical one for the experiment
+pub async fn classical_rsi_bb(
+    db: &web::Data<Client>,
+    symbol: &str,
+    interval: &Interval,
+    initial_capital: f64,
+    start_time: i64,
+    end_time: i64,
+    take_profit: f64,
+    stop_loss: f64,
+    min_entry_size: f64,
+    entry_size_percent: f64,
+) -> (f64, Vec<Position>) {
+    let ohlc_data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
+    let valid_bb = get_valid_data(bb_cached(ohlc_data.clone(), 14, 2.0), start_time, end_time);
+
+    let valid_rsi = get_valid_data(
+        rsi_cached(ohlc_data.clone(), 14),
+        start_time,
+        end_time,
+    );
+    let valid_ohlc = get_valid_data(ohlc_data.0, start_time, end_time);
+
+    let mut working_capital = initial_capital;
+    let mut positions: Vec<Position> = Vec::with_capacity(1000);
+    for (ohlc, (bb, rsi)) in valid_ohlc
+        .iter()
+        .zip(valid_bb.iter().zip(valid_rsi.iter()))
+    {
+        realize_positions(&mut positions, &mut working_capital, ohlc, false);
+
+        if working_capital <= 0.0 {
+            continue;
+        }
+
+        match !rsi.value.is_nan() {
+            true => {
+                let rsi_v = rsi.value;
+                let bb_percent = bb_percent(ohlc.close, bb.value);
+
+                let entry_amount = (((entry_size_percent / 100.0) * working_capital)
+                    .max(min_entry_size))
+                .min(working_capital);
+                
+                if rsi_v < 30.0 && bb_percent < -80.0  {
+                    working_capital -= entry_amount;
+                    positions.push(Position::new(
+                        ohlc.close,
+                        ohlc.time.timestamp_millis(),
+                        entry_amount,
+                        take_profit,
+                        stop_loss,
+                        PosType::Long,
+                    ));
+                }
+
+                if rsi_v > 70.0 && bb_percent > 80.0  {
                     working_capital -= entry_amount;
                     positions.push(Position::new(
                         ohlc.close,

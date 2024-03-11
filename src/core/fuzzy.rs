@@ -62,14 +62,17 @@ pub fn create_fuzzy_engine(
     fuzzy_engine
 }
 
-fn bb_percent(price: f64, v: (f64, f64, f64)) -> f64 {
+pub fn bb_percent(price: f64, v: (f64, f64, f64)) -> f64 {
     let (sma, lower, upper) = v;
 
-    if price > sma {
-        return (price - sma) / (upper - sma);
+    let scale = if price > sma {
+        upper - sma
     }
+    else {
+        sma - lower
+    };
 
-    (sma - price) / (sma - lower)
+    ((price - sma) / scale) * 100.0
 }
 
 /// Compares the current value of data to it's value `length` bars ago and return the normalized

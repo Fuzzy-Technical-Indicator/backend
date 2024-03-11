@@ -64,7 +64,7 @@ pub async fn main() {
     */
 
     coll.update_many(
-        doc! { "username": "r" },
+        doc! { "backtest_result.metadata.tag": "PsoBackTest" },
         doc! {
         "$set": {
             "backtest_result.metadata.test_end": 1709914780000i64
