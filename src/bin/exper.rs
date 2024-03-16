@@ -209,7 +209,7 @@ async fn fuzzy(
             SignalCondition {
                 signal_index: 1,
                 signal_threshold: 25.0,
-                signal_do_command: PosType::Long,
+                signal_do_command: PosType::Short,
                 take_profit_when: take_profit,
                 stop_loss_when: stop_loss,
                 capital_management,
@@ -220,7 +220,6 @@ async fn fuzzy(
     let mut positions_list = vec![];
     let mut net_profits = BTreeMap::new();
 
-    /* aroon-macd
     let preset_map = HashMap::from([
         ("ETH/USDT", "aroon-macd-ETHUSDT-normal-pso-1709932909"),
         ("BTC/USDT", "aroon-macd-BTCUSDT-normal-pso-1709936638"),
@@ -244,8 +243,8 @@ async fn fuzzy(
         ("NKE/USD", "aroon-macd-NKEUSD-liquidf-pso-1709923837"),
         ("TSLA/USD", "aroon-macd-TSLAUSD-liquidf-pso-1709924662"),
     ]);
-    */
 
+    /*
     let preset_map = HashMap::from([
         ("ETH/USDT", "rsi-bb-ETHUSDT-normal-pso-1710150749"),
         ("BTC/USDT", "rsi-bb-BTCUSDT-normal-pso-1710151839"),
@@ -269,6 +268,7 @@ async fn fuzzy(
         ("NKE/USD", "rsi-bb-NKEUSD-liquidf-pso-1710154210"),
         ("TSLA/USD", "rsi-bb-TSLAUSD-liquidf-pso-1710155031"),
     ]);
+    */
 
     for symbol in *asset_list {
         let preset = match kind {
@@ -308,6 +308,7 @@ async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
     let (f3_net, g4) = fuzzy(&db, &user, FuzzyKind::PSO, asset).await;
     let (f4_net, g5) = fuzzy(&db, &user, FuzzyKind::PSOWithCapitalManagement, asset).await;
 
+    /*
     let mut net_string = format!("classic: {:?} \n\n", c_net);
     net_string.push_str(&format!("f: {:?} \n\n", f1_net));
     net_string.push_str(&format!("f c: {:?} \n\n", f2_net));
@@ -320,6 +321,7 @@ async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
         Asset::Stock => File::create("experiment_graph/net_profits_stock2.txt").unwrap(),
     };
     file.write_all(net_string.as_bytes()).unwrap();
+    */
 
     let mut data = g1
         .iter()
@@ -337,8 +339,8 @@ async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
     }
 
     let mut writer = csv::Writer::from_path(match asset {
-        Asset::Crypto => "experiment_graph/data2.csv",
-        Asset::Stock => "experiment_graph/data_stock2.csv",
+        Asset::Crypto => "experiment_graph/data3.csv",
+        Asset::Stock => "experiment_graph/data_stock3.csv",
     })
     .unwrap();
     writer

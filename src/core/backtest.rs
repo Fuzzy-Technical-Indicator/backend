@@ -265,13 +265,13 @@ fn liquid_f_entry_size(
     let v = positions
         .iter()
         .filter_map(|pos| pos.realized)
-        .map(|pos| pos.pnl)
+        .map(|r| r.pnl)
         .collect::<Vec<_>>();
 
     if v.is_empty() {
         return min_entry_size;
     }
-    let risk_factor = v.iter().min_by(|a, b| a.total_cmp(b)).unwrap();
+    let risk_factor = v.iter().min_by(|a, b| a.total_cmp(b)).unwrap().abs();
 
     let mut max_twr = f64::MIN;
     let mut max_f = 0.0;
