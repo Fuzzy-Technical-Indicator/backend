@@ -41,14 +41,14 @@ pub mod swarm;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Strategy {
-    limit: usize,
-    particle_groups: usize,
-    particle_amount: usize,
-    capital: f64,
-    signal_conditions: Vec<SignalCondition>,
-    validation_period: usize, // in mounth
-    test_start: i64,
-    test_end: i64,
+    pub limit: usize,
+    pub particle_groups: usize,
+    pub particle_amount: usize,
+    pub capital: f64,
+    pub signal_conditions: Vec<SignalCondition>,
+    pub validation_period: usize, // in mounth
+    pub test_start: i64,
+    pub test_end: i64,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -525,6 +525,205 @@ impl PSORunner {
             validation_progress: vec![validation_progress],
         }
     }
+
+    pub fn multistrat_train(&self, strats: &[Strategy]) -> (PSOTrainResult, Strategy) {
+        log::info!("start multi strat training");
+        let start_pos = to_particle(&self.setting.vars);
+
+        let train_results = strats
+            .iter()
+            .map(|strat| {
+                let test_start = self.get_test_start_index(strat);
+                let train_end = match self.interval {
+                    // hour in a month
+                    Interval::OneHour => {
+                        test_start.saturating_sub(strat.validation_period * 30 * 24)
+                    }
+                    // 4-hours in a month
+                    Interval::FourHour => {
+                        test_start.saturating_sub(strat.validation_period * 30 * 6)
+                    }
+                    // day in a month
+                    Interval::OneDay => test_start.saturating_sub(strat.validation_period * 30),
+                };
+
+                let mut groups = create_particle_groups(
+                    &start_pos,
+                    strat.particle_groups,
+                    strat.particle_amount,
+                );
+
+                let ref_run = self.use_particle(strat, &start_pos, (0, train_end), None);
+                let valid_ref_run =
+                    self.use_particle(strat, &start_pos, (train_end, test_start), None);
+
+                let mut validation_progress = vec![];
+                let mut best_validation_f = f64::MAX;
+                let mut best_ind = None;
+
+                for _ in 0..strat.limit {
+                    groups.par_iter_mut().enumerate().for_each(|(_, g)| {
+                        for x in g.particles.iter_mut() {
+                            let r = self.use_particle(strat, &x.position, (0, train_end), None);
+
+                            let f = objective_func(&r, &ref_run);
+                            if f < x.f {
+                                x.f = f;
+                                x.best_pos = x.position.clone();
+                            }
+                            if f < g.lbest_f {
+                                g.lbest_f = f;
+                                g.lbest_pos = x.position.clone();
+                            }
+                            x.update_speed(&g.lbest_pos, gen_rho(1.0), gen_rho(1.5));
+                            x.change_pos();
+                        }
+                    });
+
+                    let best_group = groups
+                        .iter()
+                        .reduce(|best, x| if best.lbest_f < x.lbest_f { best } else { x })
+                        .unwrap();
+
+                    let validation_result = self.use_particle(
+                        strat,
+                        &best_group.lbest_pos,
+                        (train_end, test_start),
+                        None,
+                    );
+                    let validation_f = objective_func(&validation_result, &valid_ref_run);
+
+                    if validation_f < best_validation_f {
+                        best_validation_f = validation_f;
+                        best_ind = Some(best_group.lbest_pos.clone());
+                    }
+
+                    validation_progress.push(validation_f);
+                }
+
+                (
+                    validation_progress,
+                    best_ind.expect("This should not be None"),
+                    best_validation_f,
+                    strat,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let all_valid_progress = train_results
+            .iter()
+            .fold(&mut vec![], |acc, (vp, _, _, _)| {
+                acc.push(vp.clone());
+                acc
+            })
+            .to_vec();
+
+        let (_, best_ind_pos, _, strat) = train_results
+            .into_iter()
+            .max_by(|(_, _, f1, _), (_, _, f2, _)| f1.total_cmp(f2))
+            .unwrap();
+
+        let test_start = self.get_test_start_index(strat);
+        let test_end = self.get_test_end_index(strat);
+        let test_ref_run = self.use_particle(strat, &start_pos, (test_start, test_end), None);
+        let test_result = self.use_particle(strat, &best_ind_pos, (test_start, test_end), None);
+        let test_f = objective_func(&test_result, &test_ref_run);
+
+        let mut best_setting = self.setting.clone();
+        best_setting.vars = from_particle(&best_setting.vars, &best_ind_pos);
+
+        (PSOTrainResult {
+            test_result,
+            test_f,
+            best_setting,
+            train_progress: vec![],
+            validation_progress: all_valid_progress,
+        }, strat.clone())
+    }
+}
+
+pub async fn linvar_multistrat(
+    db: &Data<Client>,
+    symbol: &String,
+    interval: &Interval,
+    preset: &String,
+    user: &User,
+    strats: &[Strategy],
+) -> Result<(), CustomError> {
+    let now = Instant::now();
+    // data preparation
+    let username = &user.username;
+    let data = fetch_symbol(db, symbol, &Some(interval.clone())).await;
+    let setting = fetch_setting(db, username, preset).await?;
+    let fuzzy_rules = fetch_fuzzy_rules(db, username, preset).await?;
+    let fuzzy_inputs = create_input(&setting, &data, user);
+
+    let runner = PSORunner {
+        ohlcs: data.0,
+        fuzzy_rules: fuzzy_rules.clone(),
+        fuzzy_inputs,
+        setting: setting.clone(),
+        interval: interval.clone(),
+    };
+
+    let (PSOTrainResult {
+        test_result,
+        test_f,
+        train_progress,
+        validation_progress,
+        mut best_setting,
+    }, strat) = runner.multistrat_train(strats);
+
+    // hard-coded capital management name by using first signal condition
+    let cap_type = match strat.signal_conditions.first() {
+        Some(st) => match st.capital_management {
+            CapitalManagement::Normal { .. } => "normal".to_string(),
+            CapitalManagement::LiquidF { .. } => "liquidf".to_string(),
+        },
+        None => "normal".to_string(),
+    };
+
+    let new_preset_name = format!(
+        "{}-{}-{}-pso-{}",
+        setting.preset,
+        symbol.replace('/', ""),
+        cap_type,
+        Utc::now().timestamp()
+    );
+    let run_at = Utc::now().timestamp_millis();
+    let (_, backtest_id) = save_backtest_report(
+        db,
+        username,
+        symbol,
+        interval,
+        &new_preset_name,
+        BacktestResultWithRequest {
+            result: test_result,
+            metadata: BacktestMetadata::PsoBackTest(strat.clone()),
+        },
+        run_at,
+    )
+    .await?;
+
+    save_fuzzy_rules(db, fuzzy_rules, &new_preset_name).await?;
+    best_setting.preset = new_preset_name.clone();
+    save_linguistic_vars_setting(db, best_setting).await?;
+
+    let time_used = now.elapsed().as_secs();
+    log::info!("PSO time: {}", time_used);
+    let train_result = TrainResult {
+        username: username.clone(),
+        preset: new_preset_name,
+        train_progress,
+        backtest_id,
+        validation_progress,
+        test_f,
+        run_at,
+        time_used,
+    };
+    save_train_result(db, train_result).await?;
+    Ok(())
+
 }
 
 /// Normal Version
