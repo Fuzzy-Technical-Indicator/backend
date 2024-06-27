@@ -15,14 +15,24 @@ use backend::core::{
 };
 use mongodb::Client;
 
-const CRYPTOS: &'static [&str] = &["ETH/USDT", "BTC/USDT", "BNB/USDT"];
+//const CRYPTOS: &'static [&str] = &["ETH/USDT", "BTC/USDT", "BNB/USDT"];
 
 const STOCKS: &'static [&str] = &[
     "AAPL/USD", "IBM/USD", "JPM/USD", "MSFT/USD", "NKE/USD", "TSLA/USD",
 ];
 
-const TEST_START: i64 = 1696093200000;
-const TEST_END: i64 = 1709830800000;
+
+const CRYPTOS: &'static [&str] = &["ETH/USDT"];
+
+//const TEST_START: i64 = 1696093200000;
+//const TEST_END: i64 = 1709830800000;
+
+//const TEST_START: i64 = 1636909200000;
+//const TEST_END: i64 = 1650049200000;
+
+const TEST_START: i64 = 1657904400000;
+const TEST_END: i64 = 1672851600000;
+
 const CAPITAL: f64 = 3000.0;
 const INTERVAL: Interval = Interval::OneHour;
 
@@ -121,7 +131,10 @@ async fn buy_and_hold(
     return (net_profits, g);
 }
 
-async fn classical(db: &Data<Client>, asset: &Asset) -> (BTreeMap<String, String>, BTreeMap<i64, f64>) {
+async fn classical(
+    db: &Data<Client>,
+    asset: &Asset,
+) -> (BTreeMap<String, String>, BTreeMap<i64, f64>) {
     let min_entry_size = 30.0;
     let entry_size_percent = 5.0;
     let (asset_list, c_len, (take_profit, stop_loss)) = match asset {
@@ -161,7 +174,7 @@ async fn classical(db: &Data<Client>, asset: &Asset) -> (BTreeMap<String, String
             entry_size_percent,
         )
         .await;
-        
+
         positions_list.push(positions);
         net_profits.insert(symbol.to_string(), format!("{:.2}", net_profit));
     }
@@ -221,58 +234,58 @@ async fn fuzzy(
     let mut net_profits = BTreeMap::new();
 
     let preset_map = HashMap::from([
-        ("ETH/USDT", "aroon-macd-ETHUSDT-normal-pso-1709932909"),
-        ("BTC/USDT", "aroon-macd-BTCUSDT-normal-pso-1709936638"),
-        ("BNB/USDT", "aroon-macd-BNBUSDT-normal-pso-1709940328"),
-        ("AAPL/USD", "aroon-macd-AAPLUSD-normal-pso-1709925496"),
-        ("IBM/USD", "aroon-macd-IBMUSD-normal-pso-1709926175"),
-        ("JPM/USD", "aroon-macd-JPMUSD-normal-pso-1709926934"),
-        ("MSFT/USD", "aroon-macd-MSFTUSD-normal-pso-1709927730"),
-        ("NKE/USD", "aroon-macd-NKEUSD-normal-pso-1709928434"),
-        ("TSLA/USD", "aroon-macd-TSLAUSD-normal-pso-1709929245"),
+        ("ETH/USDT", "aroon-macd-ETHUSDT-normal-pso-1710615885"),
+        ("BTC/USDT", "aroon-macd-BTCUSDT-normal-pso-1710616861"),
+        ("BNB/USDT", "aroon-macd-BNBUSDT-normal-pso-1710617808"),
+        ("AAPL/USD", "aroon-macd-AAPLUSD-normal-pso-1710622641"),
+        ("IBM/USD", "aroon-macd-IBMUSD-normal-pso-1710622867"),
+        ("JPM/USD", "aroon-macd-JPMUSD-normal-pso-1710623109"),
+        ("MSFT/USD", "aroon-macd-MSFTUSD-normal-pso-1710623361"),
+        ("NKE/USD", "aroon-macd-NKEUSD-normal-pso-1710623590"),
+        ("TSLA/USD", "aroon-macd-TSLAUSD-normal-pso-1710623845"),
     ]);
 
     let with_cap_preset_map = HashMap::from([
-        ("ETH/USDT", "aroon-macd-ETHUSDT-liquidf-pso-1709944469"),
-        ("BTC/USDT", "aroon-macd-BTCUSDT-liquidf-pso-1709948657"),
-        ("BNB/USDT", "aroon-macd-BNBUSDT-liquidf-pso-1709953710"),
-        ("AAPL/USD", "aroon-macd-AAPLUSD-liquidf-pso-1709921104"),
-        ("IBM/USD", "aroon-macd-IBMUSD-liquidf-pso-1709921696"),
-        ("JPM/USD", "aroon-macd-JPMUSD-liquidf-pso-1709922361"),
-        ("MSFT/USD", "aroon-macd-MSFTUSD-liquidf-pso-1709923146"),
-        ("NKE/USD", "aroon-macd-NKEUSD-liquidf-pso-1709923837"),
-        ("TSLA/USD", "aroon-macd-TSLAUSD-liquidf-pso-1709924662"),
+        ("ETH/USDT", "aroon-macd-ETHUSDT-liquidf-pso-1710619473"),
+        ("BTC/USDT", "aroon-macd-BTCUSDT-liquidf-pso-1710620823"),
+        ("BNB/USDT", "aroon-macd-BNBUSDT-liquidf-pso-1710622383"),
+        ("AAPL/USD", "aroon-macd-AAPLUSD-liquidf-pso-1710624107"),
+        ("IBM/USD", "aroon-macd-IBMUSD-liquidf-pso-1710624332"),
+        ("JPM/USD", "aroon-macd-JPMUSD-liquidf-pso-1710624577"),
+        ("MSFT/USD", "aroon-macd-MSFTUSD-liquidf-pso-1710624825"),
+        ("NKE/USD", "aroon-macd-NKEUSD-liquidf-pso-1710625057"),
+        ("TSLA/USD", "aroon-macd-TSLAUSD-liquidf-pso-1710625338"),
     ]);
 
     /*
     let preset_map = HashMap::from([
-        ("ETH/USDT", "rsi-bb-ETHUSDT-normal-pso-1710150749"),
-        ("BTC/USDT", "rsi-bb-BTCUSDT-normal-pso-1710151839"),
-        ("BNB/USDT", "rsi-bb-BNBUSDT-normal-pso-1710152811"),
-        ("AAPL/USD", "rsi-bb-AAPLUSD-normal-pso-1710146634"),
-        ("IBM/USD", "rsi-bb-IBMUSD-normal-pso-1710147298"),
-        ("JPM/USD", "rsi-bb-JPMUSD-normal-pso-1710148041"),
-        ("MSFT/USD", "rsi-bb-MSFTUSD-normal-pso-1710148842"),
-        ("NKE/USD", "rsi-bb-NKEUSD-normal-pso-1710149563"),
-        ("TSLA/USD", "rsi-bb-TSLAUSD-normal-pso-1710150382"),
+        ("ETH/USDT", "rsi-bb-ETHUSDT-normal-pso-1710626789"),
+        ("BTC/USDT", "rsi-bb-BTCUSDT-normal-pso-1710628229"),
+        ("BNB/USDT", "rsi-bb-BNBUSDT-normal-pso-1710629636"),
+        ("AAPL/USD", "rsi-bb-AAPLUSD-normal-pso-1710634919"),
+        ("IBM/USD", "rsi-bb-IBMUSD-normal-pso-1710635251"),
+        ("JPM/USD", "rsi-bb-JPMUSD-normal-pso-1710635611"),
+        ("MSFT/USD", "rsi-bb-MSFTUSD-normal-pso-1710635978"),
+        ("NKE/USD", "rsi-bb-NKEUSD-normal-pso-1710636319"),
+        ("TSLA/USD", "rsi-bb-TSLAUSD-normal-pso-1710636697"),
     ]);
 
     let with_cap_preset_map = HashMap::from([
-        ("ETH/USDT", "rsi-bb-ETHUSDT-liquidf-pso-1710147110"),
-        ("BTC/USDT", "rsi-bb-BTCUSDT-liquidf-pso-1710148643"),
-        ("BNB/USDT", "rsi-bb-BNBUSDT-liquidf-pso-1710149667"),
-        ("AAPL/USD", "rsi-bb-AAPLUSD-liquidf-pso-1710151213"),
-        ("IBM/USD", "rsi-bb-IBMUSD-liquidf-pso-1710151919"),
-        ("JPM/USD", "rsi-bb-JPMUSD-liquidf-pso-1710152676"),
-        ("MSFT/USD", "rsi-bb-MSFTUSD-liquidf-pso-1710153486"),
-        ("NKE/USD", "rsi-bb-NKEUSD-liquidf-pso-1710154210"),
-        ("TSLA/USD", "rsi-bb-TSLAUSD-liquidf-pso-1710155031"),
+        ("ETH/USDT", "rsi-bb-ETHUSDT-liquidf-pso-1710631245"),
+        ("BTC/USDT", "rsi-bb-BTCUSDT-liquidf-pso-1710632839"),
+        ("BNB/USDT", "rsi-bb-BNBUSDT-liquidf-pso-1710634536"),
+        ("AAPL/USD", "rsi-bb-AAPLUSD-liquidf-pso-1710637075"),
+        ("IBM/USD", "rsi-bb-IBMUSD-liquidf-pso-1710637406"),
+        ("JPM/USD", "rsi-bb-JPMUSD-liquidf-pso-1710637765"),
+        ("MSFT/USD", "rsi-bb-MSFTUSD-liquidf-pso-1710638132"),
+        ("NKE/USD", "rsi-bb-NKEUSD-liquidf-pso-1710638473"),
+        ("TSLA/USD", "rsi-bb-TSLAUSD-liquidf-pso-1710638854"),
     ]);
     */
 
     for symbol in *asset_list {
         let preset = match kind {
-            Normal | WithCapitalManagement => "aroon-macd".to_string(),
+            Normal | WithCapitalManagement => "rsi-bb".to_string(),
             PSO => preset_map.get(symbol).unwrap().to_string(),
             PSOWithCapitalManagement => with_cap_preset_map.get(symbol).unwrap().to_string(),
         };
@@ -339,8 +352,8 @@ async fn do_shit(db: &Data<Client>, user: &User, asset: &Asset) {
     }
 
     let mut writer = csv::Writer::from_path(match asset {
-        Asset::Crypto => "experiment_graph/data3.csv",
-        Asset::Stock => "experiment_graph/data_stock3.csv",
+        Asset::Crypto => "experiment_graph/data7.csv",
+        Asset::Stock => "experiment_graph/data_stock4.csv",
     })
     .unwrap();
     writer
@@ -376,5 +389,5 @@ async fn main() {
     let user = auth_user(&db, "r").await.unwrap();
 
     do_shit(&db, &user, &Asset::Crypto).await;
-    do_shit(&db, &user, &Asset::Stock).await;
+    //do_shit(&db, &user, &Asset::Stock).await;
 }

@@ -632,13 +632,16 @@ impl PSORunner {
         let mut best_setting = self.setting.clone();
         best_setting.vars = from_particle(&best_setting.vars, &best_ind_pos);
 
-        (PSOTrainResult {
-            test_result,
-            test_f,
-            best_setting,
-            train_progress: vec![],
-            validation_progress: all_valid_progress,
-        }, strat.clone())
+        (
+            PSOTrainResult {
+                test_result,
+                test_f,
+                best_setting,
+                train_progress: vec![],
+                validation_progress: all_valid_progress,
+            },
+            strat.clone(),
+        )
     }
 }
 
@@ -666,13 +669,16 @@ pub async fn linvar_multistrat(
         interval: interval.clone(),
     };
 
-    let (PSOTrainResult {
-        test_result,
-        test_f,
-        train_progress,
-        validation_progress,
-        mut best_setting,
-    }, strat) = runner.multistrat_train(strats);
+    let (
+        PSOTrainResult {
+            test_result,
+            test_f,
+            train_progress,
+            validation_progress,
+            mut best_setting,
+        },
+        strat,
+    ) = runner.multistrat_train(strats);
 
     // hard-coded capital management name by using first signal condition
     let cap_type = match strat.signal_conditions.first() {
@@ -723,7 +729,6 @@ pub async fn linvar_multistrat(
     };
     save_train_result(db, train_result).await?;
     Ok(())
-
 }
 
 /// Normal Version
@@ -845,6 +850,23 @@ pub async fn delete_train_result(db: &web::Data<Client>, id: String) -> Result<(
 
     let result = coll
         .delete_one(doc! {"_id": obj_id}, None)
+        .await
+        .map_err(map_internal_err)?;
+
+    if result.deleted_count == 0 {
+        return Err(CustomError::TrainResultNotFound);
+    }
+    Ok(())
+}
+
+pub async fn delete_all_train_results(
+    db: &web::Data<Client>,
+    username: &String,
+) -> Result<(), CustomError> {
+    let coll = get_train_result_coll::<TrainResultWithId>(db).await?;
+
+    let result = coll
+        .delete_many(doc! {"username": username}, None)
         .await
         .map_err(map_internal_err)?;
 

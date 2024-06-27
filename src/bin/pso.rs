@@ -11,7 +11,7 @@ use mongodb::Client;
 const TEST_START: i64 = 1696093200000;
 const TEST_END: i64 = 1709830800000;
 const CAPITAL: f64 = 3000.0;
-const INTERVAL: Interval = Interval::OneDay;
+const INTERVAL: Interval = Interval::FourHour;
 
 const CRYPTOS: &'static [&str] = &["ETH/USDT", "BTC/USDT", "BNB/USDT"];
 
@@ -36,6 +36,7 @@ impl Runner {
         threshold: f64,
         asset: Asset,
     ) {
+        log::info!("started Runner.train");
         let (asset_list, clen, (take_profit, stop_loss)) = match asset {
             Asset::Crypto => (&CRYPTOS, CRYPTOS.len(), (20.0, 10.0)),
             Asset::Stock => (&STOCKS, STOCKS.len(), (10.0, 5.0)),
@@ -85,6 +86,8 @@ impl Runner {
             )
             .await;
         }
+    
+        log::info!("ended Runner.train");
     }
 }
 

@@ -1,5 +1,4 @@
 pub mod core;
-
 use core::backtest::backtest_consumer;
 use core::error::CustomError;
 use core::optimization::pso_consumer;
@@ -426,7 +425,7 @@ async fn run_pso_cryptos(
             preset: preset.clone(),
             user: user.clone(),
             strat: strat.clone(),
-            run_type: run_type.clone()
+            run_type: run_type.clone(),
         };
         pso_sender
             .send(job)
@@ -467,7 +466,7 @@ async fn run_pso_stocks(
             preset: preset.clone(),
             user: user.clone(),
             strat: strat.clone(),
-            run_type: run_type.clone()
+            run_type: run_type.clone(),
         };
         pso_sender
             .send(job)
@@ -501,7 +500,7 @@ async fn run_pso(
         preset,
         user,
         strat: strat.into_inner(),
-        run_type: run_type.into_inner().runtype
+        run_type: run_type.into_inner().runtype,
     };
 
     pso_sender
@@ -575,6 +574,18 @@ async fn delete_all_backtest_report(
 ) -> ActixResult<HttpResponse> {
     let user = is_user_exist(req)?;
     backtest::delete_all_becktest_report(&db, user.username)
+        .await
+        .map_err(map_custom_err)?;
+    Ok(HttpResponse::Ok().into())
+}
+
+#[delete("")]
+async fn delete_all_pso_result(
+    db: web::Data<Client>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    let user = is_user_exist(req)?;
+    optimization::delete_all_train_results(&db, &user.username)
         .await
         .map_err(map_custom_err)?;
     Ok(HttpResponse::Ok().into())
@@ -701,6 +712,7 @@ async fn main_server(
                     .service(run_pso)
                     .service(running_pso)
                     .service(delete_pso_result)
+                    .service(delete_all_pso_result)
                     .service(get_pso_result),
             )
             .service(
