@@ -10,6 +10,7 @@ use cached::proc_macro::cached;
 use chrono::{Timelike, Utc};
 use futures::stream::TryStreamExt;
 
+use core::fmt;
 use mongodb::{
     bson::{doc, Document},
     Client, Collection,
@@ -36,6 +37,21 @@ pub enum Interval {
     FourHour,
     #[serde(rename = "1d")]
     OneDay,
+}
+
+impl fmt::Display for Interval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Interval::*;
+        write!(
+            f,
+            "{}",
+            match self {
+                OneDay => "1d",
+                OneHour => "1h",
+                FourHour => "4h",
+            }
+        )
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
@@ -119,19 +135,44 @@ async fn aggr_fetch(collection: &Collection<Ohlc>, interval: &Option<Interval>) 
 }
 
 #[cached(
+    time = 300,
     key = "String",
-    convert = r#"{ format!("{}{:?}{:?}", symbol, interval, cachable_dt()) }"#
+    convert = r#"{ format!("{}{:?}", symbol, interval_opt) }"#
 )]
 pub async fn fetch_symbol(
-    db: &Client,
+    _db: &Client,
     symbol: &str,
-    interval: &Option<Interval>,
+    interval_opt: &Option<Interval>,
 ) -> (Vec<Ohlc>, String) {
-    let db_client = (*db).database(DB_NAME);
-    let collection = db_client.collection::<Ohlc>(symbol);
-    let result = aggr_fetch(&collection, interval).await;
+    // TODO: have a weight tracking system to avoid spammin the binance
+    let resp = reqwest::get(format!(
+        "https://fapi.binance.com/fapi/v1/klines?symbol={}&interval={}&limit=1000",
+        symbol.replace("/", ""),
+        match interval_opt {
+            Some(interval) => interval.to_string(),
+            None => Interval::OneHour.to_string(),
+        }
+    ))
+    .await
+    .unwrap()
+    .json::<Vec<Vec<serde_json::Value>>>()
+    .await
+    .unwrap();
 
-    let label = format!("{}{:?}", symbol, interval);
+    let result: Vec<Ohlc> = resp
+        .into_iter()
+        .map(|row| Ohlc {
+            ticker: symbol.to_string(),
+            time: mongodb::bson::DateTime::from_millis(row[0].as_i64().unwrap()),
+            open: row[1].as_str().unwrap().parse::<f64>().unwrap(),
+            high: row[2].as_str().unwrap().parse::<f64>().unwrap(),
+            low: row[3].as_str().unwrap().parse::<f64>().unwrap(),
+            close: row[4].as_str().unwrap().parse::<f64>().unwrap(),
+            volume: row[5].as_str().unwrap().parse::<f64>().unwrap() as u64,
+        })
+        .collect();
+
+    let label = format!("{}{:?}", symbol, interval_opt);
     (result, label)
 }
 
