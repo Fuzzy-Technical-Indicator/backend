@@ -1,8 +1,6 @@
-use actix_web::web;
+use actix_web::web::{self, Data};
 use backend::core::{
-    backtest,
-    settings::{delete_preset, LinguisticVarPresetModel},
-    DB_NAME,
+    backtest, optimization::delete_all_train_result, settings::{delete_preset, LinguisticVarPresetModel}, DB_NAME
 };
 use futures::TryStreamExt;
 use mongodb::{bson::doc, Client};
@@ -17,9 +15,11 @@ pub async fn main() {
     let db_client = db.database(DB_NAME);
     let coll = db_client.collection::<LinguisticVarPresetModel>("linguistic-vars");
 
+    let regex = ".*-pso-.*";
+
     let temp = coll
         .find(
-            doc! { "username": "r", "preset": { "$regex": "rsi-bb-.*-pso" } },
+            doc! { "username": "r", "preset": { "$regex": regex } },
             None,
         )
         .await
@@ -35,8 +35,10 @@ pub async fn main() {
 
     let backtest_coll = db_client.collection::<backtest::BacktestReportWithId>("backtest-reports");
 
-    let _ = backtest_coll.delete_many(
-        doc! { "username": "r", "fuzzy_preset": {"$regex": "rsi-bb-.*-pso"}},
-        None,
-    ).await;
+    let _ = backtest_coll
+        .delete_many(
+            doc! { "username": "r", "fuzzy_preset": {"$regex": regex}},
+            None,
+        )
+        .await;
 }
